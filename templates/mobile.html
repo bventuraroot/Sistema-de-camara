@@ -22,6 +22,9 @@
                 <span class="brand-title">CCTV Móvil</span>
             </div>
             <div class="header-stats">
+                <span id="mobileProfileBadge" class="badge-profile" style="font-size: 0.68rem; padding: 0.2rem 0.45rem; border-radius: 4px; background: rgba(56,189,248,0.15); color: #38bdf8; border: 1px solid rgba(56,189,248,0.3);">
+                    {{ system_profile.profile_badge if system_profile else '⚡ Auto' }}
+                </span>
                 <span id="mobileFpsBadge" class="badge-fps">-- FPS</span>
                 <span id="mobileLatencyBadge" class="badge-latency">-- ms</span>
             </div>

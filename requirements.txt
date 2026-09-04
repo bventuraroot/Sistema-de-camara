@@ -1,8 +1,10 @@
-flask==3.0.0
-flask-socketio==5.3.6
-opencv-python==4.8.1.78
-numpy==1.26.2
-ultralytics==8.0.230
-paho-mqtt==1.6.1
-python-dotenv==1.0.0
-eventlet==0.35.1
+# =====================================================================
+# SISTEMA DE CÁMARAS INTELIGENTE - DEPENDENCIAS COMPLETAS CON IA
+# =====================================================================
+
+# 1. Dependencias Base del Sistema (Servidor Web, Streams RTSP, Grabador y Detección OpenCV)
+-r requirements-base.txt
+
+# 2. Módulo Opcional de Inteligencia Artificial (YOLOv8 + PyTorch para personas y autos)
+# En computadoras modestas (menos de 4 núcleos o 4GB RAM), instala solo requirements-base.txt
+ultralytics>=8.0.230

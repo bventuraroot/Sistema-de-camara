@@ -3,7 +3,7 @@
 # Script de inicio rápido para el Sistema de Cámaras Inteligente
 
 echo "================================================="
-echo "🎥 Sistema de Cámaras Inteligente (IA Core)"
+echo "🎥 Sistema de Cámaras Inteligente (Auto-Acomodado)"
 echo "================================================="
 
 # Verificar que tuya-rtsp-bridge esté corriendo en Docker

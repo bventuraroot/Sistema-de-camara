@@ -185,6 +185,48 @@ body {
     font-weight: 600;
 }
 
+.spec-badge-clickable {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background: rgba(56, 189, 248, 0.08);
+    border-color: rgba(56, 189, 248, 0.3);
+}
+
+.spec-badge-clickable:hover {
+    background: rgba(56, 189, 248, 0.18);
+    border-color: #38bdf8;
+    transform: translateY(-1px);
+}
+
+.profile-option-card {
+    transition: all 0.18s ease;
+}
+
+.profile-option-card:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border-color: rgba(56, 189, 248, 0.4) !important;
+}
+
+.profile-option-card.active-selected {
+    background: rgba(56, 189, 248, 0.12) !important;
+    border-color: #38bdf8 !important;
+}
+
+.disabled-by-profile {
+    opacity: 0.55;
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.capability-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.45rem 0.65rem;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+}
+
 /* ----------------- BANNER ACCESO LOCAL ----------------- */
 .local-access-banner {
     display: flex;

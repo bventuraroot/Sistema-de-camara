@@ -338,6 +338,11 @@ async function syncTrackingState() {
             const camData = (data.cameras || {})[currentCam] || {};
             trackingEnabled = camData.auto_tracking !== false;
             updateTrackingButtonUI();
+
+            if (data.system_profile) {
+                const mobBadge = document.getElementById('mobileProfileBadge');
+                if (mobBadge) mobBadge.textContent = data.system_profile.profile_badge;
+            }
         }
     } catch (e) {}
 }

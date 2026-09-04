@@ -2,22 +2,47 @@ import cv2
 import numpy as np
 import logging
 import os
-import torch
-from ultralytics import YOLO
 from threading import Lock
 
 logger = logging.getLogger(__name__)
 
+# Intentar importar PyTorch y Ultralytics de forma segura
+try:
+    import torch
+    from ultralytics import YOLO
+    AI_AVAILABLE = True
+except (ImportError, Exception) as _ai_err:
+    torch = None
+    YOLO = None
+    AI_AVAILABLE = False
+    logger.warning(f"Módulo de IA (PyTorch/Ultralytics) no disponible en este PC: {_ai_err}. El sistema operará en Modo NVR Ligero sin IA.")
+
 class ObjectDetector:
     def __init__(self, confidence=0.45, model_path=None):
         self.confidence = confidence
-        self.active = True
         self.lock = Lock()
+        self.available = AI_AVAILABLE
         
-        # Selección de dispositivo acelerado (Apple Silicon MPS o CPU)
-        if torch.backends.mps.is_available():
+        # Si la IA no está instalada en este PC, inicializar en modo seguro/desactivado
+        if not self.available:
+            self.active = False
+            self.device = 'none'
+            self.model = None
+            logger.info("ObjectDetector inicializado en modo degradado (IA no instalada: Modo NVR Ligero activo)")
+            self.class_mapping = {}
+            self.colors = {}
+            self.default_color = (0, 200, 255)
+            return
+
+        self.active = True
+        
+        # Selección de dispositivo acelerado (Apple Silicon MPS, NVIDIA CUDA o CPU)
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             self.device = 'mps'
             logger.info("Aceleración por hardware Apple Silicon (MPS) activada para YOLOv8")
+        elif torch.cuda.is_available():
+            self.device = 'cuda'
+            logger.info("Aceleración por hardware NVIDIA (CUDA) activada para YOLOv8")
         else:
             self.device = 'cpu'
             logger.info("Utilizando CPU optimizada para YOLOv8")
@@ -39,7 +64,14 @@ class ObjectDetector:
         except Exception as e:
             logger.warning(f"Error cargando en {self.device}, reintentando en cpu: {e}")
             self.device = 'cpu'
-            self.model = YOLO('yolov8n.pt')
+            try:
+                self.model = YOLO('yolov8n.pt')
+            except Exception as e2:
+                logger.error(f"No se pudo cargar el modelo YOLO: {e2}. Desactivando IA.")
+                self.available = False
+                self.active = False
+                self.model = None
+                return
         
         # Traducción y categorización de clases
         self.class_mapping = {
@@ -73,7 +105,7 @@ class ObjectDetector:
     
     def detect(self, frame):
         """Ejecuta inferencia YOLOv8 en el frame y retorna la lista de detecciones."""
-        if not self.active or frame is None:
+        if not self.available or not self.active or frame is None or self.model is None:
             return []
         
         with self.lock:
@@ -113,7 +145,7 @@ class ObjectDetector:
     
     def draw_detections(self, frame, detections):
         """Dibuja elegantes cajas delimitadoras y etiquetas translúcidas sobre el frame."""
-        if frame is None or not detections:
+        if frame is None or not detections or not self.available:
             return frame
         
         h_frame, w_frame = frame.shape[:2]
@@ -166,14 +198,23 @@ class ObjectDetector:
         return frame
     
     def is_active(self):
-        return self.active
+        return bool(self.available and self.active)
+    
+    def is_available(self):
+        return self.available
     
     def toggle(self):
+        if not self.available:
+            self.active = False
+            return False
         self.active = not self.active
         logger.info(f"Detección de objetos IA: {'activada' if self.active else 'desactivada'}")
         return self.active
     
     def set_active(self, state: bool):
+        if not self.available:
+            self.active = False
+            return False
         self.active = state
         return self.active
     
@@ -183,10 +224,20 @@ class ObjectDetector:
             logger.info(f"Confianza de detección configurada a: {self.confidence}")
     
     def get_model_info(self):
+        if not self.available:
+            return {
+                'model': 'Ninguno (Modo NVR Ligero)',
+                'device': 'none',
+                'confidence': 0.0,
+                'active': False,
+                'available': False,
+                'classes': []
+            }
         return {
             'model': 'YOLOv8n',
             'device': self.device,
             'confidence': self.confidence,
             'active': self.active,
+            'available': True,
             'classes': list(self.class_mapping.values())
         }

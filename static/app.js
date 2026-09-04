@@ -1601,6 +1601,41 @@ async function pollStatus() {
             }
         }
 
+        // Sincronizar Perfil del Sistema y Estado de Capacidades
+        if (status.system_profile) {
+            const sp = status.system_profile;
+            const sysProfText = document.getElementById('systemProfileText');
+            if (sysProfText) sysProfText.textContent = sp.profile_badge;
+            const sideProfDesc = document.getElementById('sidebarProfileDesc');
+            if (sideProfDesc) sideProfDesc.textContent = sp.profile_name;
+            const sideHw = document.getElementById('sidebarHwText');
+            if (sideHw) sideHw.textContent = `${sp.specs.cpu_cores} núcleos | ${sp.specs.ram_total_gb} GB RAM`;
+            const sideAcc = document.getElementById('sidebarAccelText');
+            if (sideAcc) sideAcc.textContent = sp.ai_available ? sp.ai_acceleration.toUpperCase() : 'Ninguna (CPU)';
+
+            // Control de degradación de switches si estamos en Modo Ligero o sin IA
+            const isLightOrNoAi = (sp.active_profile === 'light' || !sp.ai_available);
+            const cfgAiRow = document.getElementById('cfgAiFilterRow');
+            const cfgAiSwitch = document.getElementById('cfgAiFilterSwitch');
+            const cfgAiBadge = document.getElementById('cfgAiFilterBadge');
+            const cfgAiDesc = document.getElementById('cfgAiFilterDesc');
+
+            if (cfgAiSwitch && cfgAiRow) {
+                if (isLightOrNoAi) {
+                    cfgAiSwitch.disabled = true;
+                    cfgAiSwitch.checked = false;
+                    cfgAiRow.classList.add('disabled-by-profile');
+                    if (cfgAiBadge) cfgAiBadge.textContent = '(Desactivado en Modo Ligero)';
+                    if (cfgAiDesc) cfgAiDesc.textContent = 'Detección por movimiento directa activa para no sobrecargar el CPU.';
+                } else {
+                    cfgAiSwitch.disabled = false;
+                    cfgAiRow.classList.remove('disabled-by-profile');
+                    if (cfgAiBadge) cfgAiBadge.textContent = '';
+                    if (cfgAiDesc) cfgAiDesc.textContent = 'Solo personas/vehículos (ignora mascotas)';
+                }
+            }
+        }
+
         // Estado del Horario de Captura
         if (status.motion_schedule) {
             const schedBanner = document.getElementById('scheduleStatusBanner');
@@ -1925,6 +1960,152 @@ function initPerCameraControls() {
     };
 }
 
+// ----------------- MODAL DE CAPACIDADES Y MODO DEL SISTEMA -----------------
+function initSystemCapabilities() {
+    const systemProfileBtn = document.getElementById('systemProfileBtn');
+    const btnOpenCapabilities = document.getElementById('btnOpenCapabilities');
+    const capabilitiesModal = document.getElementById('capabilitiesModal');
+    const capabilitiesCloseBtn = document.getElementById('capabilitiesCloseBtn');
+    const capabilitiesCancelBtn = document.getElementById('capabilitiesCancelBtn');
+    const capabilitiesBackdrop = document.getElementById('capabilitiesBackdrop');
+    const capabilitiesSaveBtn = document.getElementById('capabilitiesSaveBtn');
+
+    const capCpuText = document.getElementById('capCpuText');
+    const capRamText = document.getElementById('capRamText');
+    const capAccelText = document.getElementById('capAccelText');
+    const capAiModuleText = document.getElementById('capAiModuleText');
+    const capabilitiesList = document.getElementById('capabilitiesList');
+    const capRecommendationBox = document.getElementById('capRecommendationBox');
+    const systemProfileText = document.getElementById('systemProfileText');
+    const sidebarProfileDesc = document.getElementById('sidebarProfileDesc');
+    const sidebarHwText = document.getElementById('sidebarHwText');
+    const sidebarAccelText = document.getElementById('sidebarAccelText');
+
+    async function loadCapabilities(openModal = false) {
+        try {
+            const res = await fetch('/api/system/capabilities');
+            if (!res.ok) return;
+            const data = await res.json();
+            renderCapabilitiesUI(data);
+            if (openModal && capabilitiesModal) {
+                capabilitiesModal.style.display = 'flex';
+            }
+        } catch (e) {
+            console.error('Error cargando capacidades del sistema:', e);
+        }
+    }
+
+    function renderCapabilitiesUI(data) {
+        if (!data) return;
+        if (systemProfileText) systemProfileText.textContent = data.profile_badge;
+        if (sidebarHwText) sidebarHwText.textContent = `${data.specs.cpu_cores} núcleos | ${data.specs.ram_total_gb} GB RAM`;
+        if (sidebarAccelText) sidebarAccelText.textContent = data.ai_available ? data.ai_acceleration.toUpperCase() : 'Ninguna (CPU)';
+        if (sidebarProfileDesc) sidebarProfileDesc.textContent = data.profile_name;
+
+        if (capCpuText) capCpuText.textContent = `${data.specs.cpu_cores} núcleos (${data.specs.os})`;
+        if (capRamText) capRamText.textContent = `${data.specs.ram_total_gb} GB (${data.specs.ram_free_gb} GB libres)`;
+        if (capAccelText) capAccelText.textContent = data.ai_device_name;
+        if (capAiModuleText) {
+            capAiModuleText.textContent = data.ai_available ? '✅ Instalado (YOLOv8)' : '⚠️ No Instalado (Modo Ligero)';
+            capAiModuleText.style.color = data.ai_available ? '#34d399' : '#f59e0b';
+        }
+
+        if (capRecommendationBox) {
+            capRecommendationBox.textContent = `💡 Diagnóstico: ${data.recommendation_text}`;
+        }
+
+        // Radios de selección de modo
+        const radios = document.querySelectorAll('input[name="sysProfileRadio"]');
+        radios.forEach(r => {
+            if (r.value === data.configured_profile) {
+                r.checked = true;
+                r.closest('.profile-option-card')?.classList.add('active-selected');
+            } else {
+                r.closest('.profile-option-card')?.classList.remove('active-selected');
+            }
+            r.onchange = () => {
+                radios.forEach(other => other.closest('.profile-option-card')?.classList.remove('active-selected'));
+                r.closest('.profile-option-card')?.classList.add('active-selected');
+            };
+        });
+
+        // Lista detallada de capacidades
+        if (capabilitiesList && data.capabilities) {
+            capabilitiesList.innerHTML = '';
+            for (const [key, item] of Object.entries(data.capabilities)) {
+                const row = document.createElement('div');
+                row.className = 'capability-item';
+                const isOk = item.enabled;
+                const isSupp = item.supported;
+                const icon = isOk ? '✅' : (isSupp ? '⚠️' : '❌');
+                const badgeColor = isOk ? '#34d399' : (isSupp ? '#f59e0b' : '#ef4444');
+                const badgeBg = isOk ? 'rgba(52,211,153,0.12)' : (isSupp ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)');
+
+                row.innerHTML = `
+                    <div style="display: flex; flex-direction: column; gap: 0.12rem;">
+                        <span style="color: #f1f5f9; font-weight: 500;">${icon} ${item.label}</span>
+                        <span style="color: #94a3b8; font-size: 0.72rem;">${item.reason || item.desc}</span>
+                    </div>
+                    <span style="font-size: 0.72rem; padding: 0.2rem 0.5rem; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}33; white-space: nowrap;">
+                        ${item.status_badge}
+                    </span>
+                `;
+                capabilitiesList.appendChild(row);
+            }
+        }
+    }
+
+    if (systemProfileBtn) {
+        systemProfileBtn.addEventListener('click', () => loadCapabilities(true));
+    }
+    if (btnOpenCapabilities) {
+        btnOpenCapabilities.addEventListener('click', () => loadCapabilities(true));
+    }
+
+    function closeModal() {
+        if (capabilitiesModal) capabilitiesModal.style.display = 'none';
+    }
+
+    if (capabilitiesCloseBtn) capabilitiesCloseBtn.addEventListener('click', closeModal);
+    if (capabilitiesCancelBtn) capabilitiesCancelBtn.addEventListener('click', closeModal);
+    if (capabilitiesBackdrop) capabilitiesBackdrop.addEventListener('click', closeModal);
+
+    if (capabilitiesSaveBtn) {
+        capabilitiesSaveBtn.addEventListener('click', async () => {
+            const selectedRadio = document.querySelector('input[name="sysProfileRadio"]:checked');
+            if (!selectedRadio) return;
+            const newProfile = selectedRadio.value;
+            capabilitiesSaveBtn.disabled = true;
+            capabilitiesSaveBtn.textContent = 'Guardando...';
+
+            try {
+                const res = await fetch('/api/system/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile: newProfile })
+                });
+                const result = await res.json();
+                if (result.success && result.summary) {
+                    renderCapabilitiesUI(result.summary);
+                    closeModal();
+                    alert(`✅ Modo cambiado a: ${result.summary.profile_name}`);
+                    pollStatus();
+                } else {
+                    alert(`Error: ${result.error || 'No se pudo aplicar el perfil'}`);
+                }
+            } catch (e) {
+                alert(`Error de red: ${e}`);
+            } finally {
+                capabilitiesSaveBtn.disabled = false;
+                capabilitiesSaveBtn.textContent = '💾 Guardar y Aplicar Modo';
+            }
+        });
+    }
+
+    // Cargar capacidades iniciales
+    loadCapabilities(false);
+}
+
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', () => {
     // En celulares: evitar el Mosaico Dual (2 streams MJPEG simultáneos saturan Safari/Chrome móvil)
@@ -1944,6 +2125,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPtzControls();
     initScheduleControls();
     initPerCameraControls();
+    initSystemCapabilities();
     pollStatus();
     setInterval(pollStatus, 2500);
 });

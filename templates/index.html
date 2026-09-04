@@ -41,6 +41,10 @@
                         <span class="icon">📁</span> Mediateca / Grabaciones
                     </a>
                 </div>
+                <button type="button" class="spec-badge spec-badge-clickable" id="systemProfileBtn" title="Capacidades de este equipo y modo de rendimiento (haz clic para ver detalles)">
+                    <span class="spec-label">PERFIL</span>
+                    <span class="spec-value" id="systemProfileText">{{ system_profile.profile_badge if system_profile else '⚡ Auto' }}</span>
+                </button>
                 <button class="btn btn-xs btn-outline" id="shutdownBtn" title="Apagar el sistema de cámaras por completo" style="border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 0.35rem 0.75rem;">
                     <span class="icon">🛑</span> Apagar
                 </button>
@@ -298,6 +302,33 @@
                     </div>
                 </div>
 
+                <!-- Panel de Hardware y Modo del Sistema -->
+                <div class="card profile-summary-panel">
+                    <div class="profile-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <h3 class="panel-title" style="margin-bottom: 0;">💻 Modo del Sistema</h3>
+                        <button type="button" class="btn btn-xs btn-outline" id="btnOpenCapabilities" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">
+                            ⚙️ Ajustar Modo
+                        </button>
+                    </div>
+                    <div class="profile-meta" style="font-size: 0.78rem; color: #94a3b8; display: flex; flex-direction: column; gap: 0.35rem;">
+                        <div style="display: flex; justify-content: space-between;">
+                            <span>Hardware:</span>
+                            <strong style="color: #e2e8f0;" id="sidebarHwText">
+                                {{ system_profile.specs.cpu_cores if system_profile else '--' }} núcleos | {{ system_profile.specs.ram_total_gb if system_profile else '--' }} GB RAM
+                            </strong>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span>Aceleración:</span>
+                            <span style="color: #38bdf8;" id="sidebarAccelText">
+                                {{ system_profile.ai_acceleration.upper() if (system_profile and system_profile.ai_available) else 'Ninguna (CPU)' }}
+                            </span>
+                        </div>
+                        <div class="profile-status-bar" id="sidebarProfileBar" style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px; padding: 0.4rem 0.6rem; margin-top: 0.2rem; font-size: 0.75rem; color: #bae6fd;">
+                            <span id="sidebarProfileDesc">{{ system_profile.profile_name if system_profile else 'Modo Automático' }}</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Panel de Configuración Individual por Cámara -->
                 <div class="card per-cam-panel">
                     <div class="per-cam-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
@@ -351,12 +382,12 @@
                         </div>
 
                         <!-- Switch 4: Filtro IA -->
-                        <div class="per-cam-switch-row">
+                        <div class="per-cam-switch-row" id="cfgAiFilterRow">
                             <div class="switch-row-text">
-                                <span class="row-title">🎯 Filtro Inteligente IA</span>
-                                <span class="row-desc">Solo personas/vehículos (ignora mascotas)</span>
+                                <span class="row-title">🎯 Filtro Inteligente IA <span id="cfgAiFilterBadge" style="font-size: 0.72rem; color: #f59e0b;"></span></span>
+                                <span class="row-desc" id="cfgAiFilterDesc">Solo personas/vehículos (ignora mascotas)</span>
                             </div>
-                            <label class="switch-toggle">
+                            <label class="switch-toggle" id="cfgAiFilterToggle">
                                 <input type="checkbox" id="cfgAiFilterSwitch" checked>
                                 <span class="slider-round"></span>
                             </label>
@@ -572,6 +603,98 @@
                 </div>
             </aside>
         </main>
+
+        <!-- Modal de Diagnóstico de Hardware y Capacidades del Sistema -->
+        <div class="snapshot-modal" id="capabilitiesModal" style="display: none;">
+            <div class="modal-backdrop" id="capabilitiesBackdrop"></div>
+            <div class="modal-content" style="max-width: 650px; width: 92%;">
+                <div class="modal-header">
+                    <div class="modal-header-left">
+                        <h4>🖥️ Capacidades de tu Equipo & Modo de Rendimiento</h4>
+                    </div>
+                    <button class="modal-close" id="capabilitiesCloseBtn">&times;</button>
+                </div>
+                <div class="modal-body" style="max-height: 75vh; overflow-y: auto; padding: 1.2rem; display: flex; flex-direction: column; gap: 1rem;">
+                    <!-- Resumen del Hardware -->
+                    <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 0.8rem 1rem;">
+                        <h5 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.85rem; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.05em;">🔍 Diagnóstico de Hardware</h5>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.6rem; font-size: 0.8rem;">
+                            <div>
+                                <span style="color: var(--text-muted); display: block; font-size: 0.72rem;">PROCESADOR</span>
+                                <strong id="capCpuText">-- núcleos</strong>
+                            </div>
+                            <div>
+                                <span style="color: var(--text-muted); display: block; font-size: 0.72rem;">MEMORIA RAM</span>
+                                <strong id="capRamText">-- GB</strong>
+                            </div>
+                            <div>
+                                <span style="color: var(--text-muted); display: block; font-size: 0.72rem;">ACELERACIÓN</span>
+                                <strong id="capAccelText" style="color: #34d399;">--</strong>
+                            </div>
+                            <div>
+                                <span style="color: var(--text-muted); display: block; font-size: 0.72rem;">MÓDULO IA</span>
+                                <strong id="capAiModuleText">--</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Selector de Perfil -->
+                    <div>
+                        <h5 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.85rem; color: #f8fafc;">🎯 Modo de Operación</h5>
+                        <div style="display: flex; flex-direction: column; gap: 0.5rem;" id="profileOptionsGroup">
+                            <label class="profile-option-card" style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.65rem 0.8rem; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; background: rgba(255, 255, 255, 0.02);">
+                                <input type="radio" name="sysProfileRadio" value="auto" style="margin-top: 0.2rem;">
+                                <div>
+                                    <strong style="color: #38bdf8; font-size: 0.84rem;">1. Automático (Recomendado)</strong>
+                                    <p style="margin: 0.2rem 0 0; font-size: 0.75rem; color: #94a3b8;">El sistema detecta automáticamente los recursos del PC y aplica la mejor configuración.</p>
+                                </div>
+                            </label>
+
+                            <label class="profile-option-card" style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.65rem 0.8rem; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; background: rgba(255, 255, 255, 0.02);">
+                                <input type="radio" name="sysProfileRadio" value="light" style="margin-top: 0.2rem;">
+                                <div>
+                                    <strong style="color: #f59e0b; font-size: 0.84rem;">2. ⚡ Modo NVR Ligero (Solo Grabador y Visor)</strong>
+                                    <p style="margin: 0.2rem 0 0; font-size: 0.75rem; color: #94a3b8;">Grabación continua 24/7 y detección de movimiento con OpenCV. Desactiva la IA para consumir casi 0% de CPU y evitar saturación en cualquier PC o laptop modesta.</p>
+                                </div>
+                            </label>
+
+                            <label class="profile-option-card" style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.65rem 0.8rem; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; background: rgba(255, 255, 255, 0.02);">
+                                <input type="radio" name="sysProfileRadio" value="balanced" style="margin-top: 0.2rem;">
+                                <div>
+                                    <strong style="color: #a78bfa; font-size: 0.84rem;">3. ⚖️ Modo Equilibrado (IA Bajo Demanda)</strong>
+                                    <p style="margin: 0.2rem 0 0; font-size: 0.75rem; color: #94a3b8;">Ideal para 4-6 núcleos. La IA solo se activa cuando OpenCV detecta movimiento previo, ahorrando hasta un 80% de procesador.</p>
+                                </div>
+                            </label>
+
+                            <label class="profile-option-card" style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.65rem 0.8rem; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; background: rgba(255, 255, 255, 0.02);">
+                                <input type="radio" name="sysProfileRadio" value="performance" style="margin-top: 0.2rem;">
+                                <div>
+                                    <strong style="color: #34d399; font-size: 0.84rem;">4. 🚀 Modo Alto Rendimiento (IA Full)</strong>
+                                    <p style="margin: 0.2rem 0 0; font-size: 0.75rem; color: #94a3b8;">Inferencia continua en tiempo real con GPU/MPS acelerado y seguimiento automático ininterrumpido.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Lista de Capacidades / A qué tienes acceso -->
+                    <div>
+                        <h5 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.85rem; color: #f8fafc;">📋 A qué tienes acceso en esta Computadora:</h5>
+                        <div id="capabilitiesList" style="display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.78rem;">
+                            <!-- Generado dinámicamente -->
+                        </div>
+                    </div>
+
+                    <!-- Mensaje de recomendación -->
+                    <div id="capRecommendationBox" style="background: rgba(56, 189, 248, 0.07); border-left: 3px solid #38bdf8; padding: 0.6rem 0.8rem; border-radius: 4px; font-size: 0.76rem; color: #cbd5e1;">
+                        --
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.6rem;">
+                    <button type="button" class="btn btn-sm btn-outline" id="capabilitiesCancelBtn">Cerrar</button>
+                    <button type="button" class="btn btn-sm btn-primary" id="capabilitiesSaveBtn">💾 Guardar y Aplicar Modo</button>
+                </div>
+            </div>
+        </div>
 
         <!-- Modal para previsualizar capturas y videos de eventos -->
         <div class="snapshot-modal" id="snapshotModal" style="display: none;">

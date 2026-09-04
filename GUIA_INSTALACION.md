@@ -41,12 +41,34 @@ Esta guía explica cómo instalar y levantar este sistema de seguridad en la com
 
 ### En Windows:
 1. Haz doble clic en el archivo **`setup_vecino.bat`**.
-2. El script creará el entorno virtual de Python e instalará todas las librerías necesarias.
+2. El script detectará los núcleos de tu procesador y te ofrecerá elegir entre:
+   * **Modo Auto / Recomendado**
+   * **Modo NVR Ligero** (Solo Grabador y Visor, descarga rápida ~50MB sin PyTorch)
+   * **Modo Completo con IA** (YOLOv8 + PyTorch)
 3. Para iniciar el sistema, haz doble clic en **`start.bat`**.
 
 ---
 
-## 3. 🔍 Cómo Descubrir la IP de la Cámara en la Casa del Vecino
+## 3. 🧠 Auto-Acomodación de Hardware y Modos del Sistema
+
+El sistema incorpora un **motor de auto-diagnóstico** (`SystemProfiler`) que analiza la CPU, RAM, GPU y dependencias instaladas en el equipo para protegerlo de saturaciones y garantizar que grabe sin interrupciones.
+
+| Perfil de Operación | Hardware Típico | Funciones Habilitadas | Consumo de CPU |
+| :--- | :--- | :--- | :--- |
+| **⚡ Modo NVR Ligero** | PCs antiguas, 2 núcleos, <4 GB RAM, o sin PyTorch | 📼 Grabación 24/7, 🎬 Grabación por Movimiento (OpenCV), 📱 Visor Web y Celular | Mínimo (~1% a 3%) |
+| **⚖️ Modo Equilibrado** | 4 a 6 núcleos, 4-8 GB RAM (CPU pura) | Todo lo anterior + 🎯 Filtro IA bajo demanda (solo analiza al haber movimiento) | Moderado (~10% a 20%) |
+| **🚀 Alto Rendimiento** | Apple Silicon (MPS), GPU NVIDIA (CUDA) o 8+ núcleos | Todo lo anterior + 🧠 Inferencia neuronal continua (YOLOv8) + 🔄 Auto-Tracking PTZ | Óptimo con acelerador |
+
+### ¿Cómo saber qué funciones tienes disponibles en tu equipo?
+1. En la parte superior de la pantalla principal verás el botón **`[PERFIL]`** con el modo activo (ej. `⚡ NVR Ligero` o `🚀 IA Acelerada`).
+2. Haz clic en el botón o en la barra lateral en **"⚙️ Ajustar Modo"**:
+   * Verás el diagnóstico exacto de tu hardware (núcleos de procesador, RAM libre, gráfica).
+   * Verás la lista de funciones soportadas y habilitadas con su explicación técnica.
+   * Puedes alternar entre **Automático, Ligero, Equilibrado o Alto Rendimiento** en caliente con un solo clic.
+
+---
+
+## 4. 🔍 Cómo Descubrir la IP de la Cámara en la Casa del Vecino
 
 El sistema cuenta con un escáner automático de red integrado. 
 
@@ -58,7 +80,7 @@ El sistema cuenta con un escáner automático de red integrado.
 
 ---
 
-## 4. 📹 Protocolos y URLs RTSP para Diferentes Marcas de Cámaras
+## 5. 📹 Protocolos y URLs RTSP para Diferentes Marcas de Cámaras
 
 Copia y pega la plantilla correspondiente en el archivo `config/settings.json` o configúrala en el panel:
 
@@ -93,7 +115,7 @@ Copia y pega la plantilla correspondiente en el archivo `config/settings.json` o
 
 ---
 
-## 5. 💾 Cómo Configurar Dónde Guardar las Grabaciones
+## 6. 💾 Cómo Configurar Dónde Guardar las Grabaciones
 
 El sistema es **100% portable**. Para que el vecino guarde sus videos en su propio disco, edita el archivo `config/settings.json`:
 
@@ -116,7 +138,7 @@ Si la carpeta no existe, el sistema la creará automáticamente al iniciar.
 
 ---
 
-## 6. 📱 Visualización en Celulares con Cero Lag
+## 7. 📱 Visualización en Celulares con Cero Lag
 
 Para ver las cámaras desde cualquier teléfono dentro de la casa sin retraso de video:
 1. Conecta el teléfono al Wi-Fi de la casa.

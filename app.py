@@ -21,6 +21,7 @@ from analyzer.recorder import Recorder
 from analyzer.ptz_controller import PTZController
 from analyzer.icam_ptz_controller import ICam365PTZController
 from analyzer.network_scanner import scan_network_cameras, test_rtsp_connection, CAMERA_PRESETS
+from analyzer.system_profiler import SystemProfiler
 
 load_dotenv()
 
@@ -72,6 +73,7 @@ def deep_merge(target: dict, source: dict) -> dict:
 
 def get_all_settings():
     defaults = {
+        'system_profile': 'auto',
         'storage_path': os.getenv('RECORDINGS_DIR', '/Volumes/ExternalData/Grabaciones_Camara'),
         'motion_threshold': int(os.getenv('MOTION_THRESHOLD', 4000)),
         'confidence_threshold': float(os.getenv('CONFIDENCE_THRESHOLD', 0.45)),
@@ -198,6 +200,7 @@ object_detector = None
 alert_system = None
 ptz_controller = None
 icam_ptz = None
+system_profiler = None
 
 ALERT_COOLDOWN = int(os.getenv('ALERT_COOLDOWN', 5))
 event_queues = []
@@ -465,15 +468,22 @@ def camera_recording_feeder(cid):
             time.sleep(1)
 
 def init_components():
-    global object_detector, alert_system, ptz_controller, icam_ptz
+    global object_detector, alert_system, ptz_controller, icam_ptz, system_profiler
     
     settings = get_all_settings()
     
-    # 1. Detector de objetos YOLOv8 compartido
+    # Diagnóstico automático de hardware y perfilado del sistema
+    configured_profile = settings.get('system_profile', 'auto')
+    system_profiler = SystemProfiler(settings_profile=configured_profile)
+    system_profiler.print_startup_banner()
+    effective_profile = system_profiler.active_profile
+    
+    # 1. Detector de objetos YOLOv8 compartido (con degradación elegante)
     conf_thresh = settings.get('confidence_threshold', 0.45)
     object_detector = ObjectDetector(confidence=conf_thresh)
-    if not settings.get('object_detection', True):
+    if effective_profile == 'light' or not object_detector.is_available() or not settings.get('object_detection', True):
         object_detector.active = False
+        logger.info(f"Detector IA desactivado (Perfil: {effective_profile}, IA Disponible: {object_detector.is_available()})")
         
     alert_system = AlertSystem(cooldown=int(os.getenv('ALERT_COOLDOWN', 5)))
     
@@ -490,11 +500,16 @@ def init_components():
             cam['name'] = cam_conf.get('name', cam['name'])
             cam['rtsp_url'] = cam_conf.get('rtsp_url', cam['rtsp_url'])
         
-        # Ajustes individuales por cámara
-        cam['auto_tracking'] = cam_conf.get('auto_tracking', True)
+        # Ajustes individuales por cámara (auto-acomodados al perfil)
+        if effective_profile == 'light' or not object_detector.is_available():
+            cam['ai_filter'] = False
+            cam['auto_tracking'] = False
+        else:
+            cam['ai_filter'] = cam_conf.get('ai_filter', settings.get('ai_motion_only', True))
+            cam['auto_tracking'] = cam_conf.get('auto_tracking', True)
+
         cam['event_recording'] = cam_conf.get('event_recording', True)
         cam['continuous_recording'] = cam_conf.get('continuous_recording', cont_rec)
-        cam['ai_filter'] = cam_conf.get('ai_filter', settings.get('ai_motion_only', True))
         cam['motion_detection'] = cam_conf.get('motion_detection', settings.get('motion_detection', True))
         
         logger.info(f"Iniciando {cam['name']} -> {cam['rtsp_url']} (Tracking: {cam['auto_tracking']}, EventRec: {cam['event_recording']}, 24/7: {cam['continuous_recording']})")
@@ -730,13 +745,63 @@ def mobile_view():
     port = int(os.getenv('WEB_PORT', 5001))
     sv = _static_version()
     settings = get_all_settings()
+    prof_data = system_profiler.get_summary() if system_profiler else SystemProfiler().get_summary()
     return render_template(
         'mobile.html',
         lan_ip=lan_ip,
         port=port,
         static_version=sv,
-        cameras=settings.get('cameras', {})
+        cameras=settings.get('cameras', {}),
+        system_profile=prof_data
     )
+
+@app.route('/api/system/capabilities', methods=['GET'])
+def system_capabilities():
+    """Retorna el diagnóstico completo de hardware, perfil activo y funciones soportadas."""
+    if system_profiler:
+        return jsonify(system_profiler.get_summary())
+    temp_p = SystemProfiler()
+    return jsonify(temp_p.get_summary())
+
+@app.route('/api/system/profile', methods=['POST'])
+def update_system_profile():
+    """Cambia el perfil de rendimiento ('auto', 'light', 'balanced', 'performance') en caliente."""
+    global object_detector, system_profiler
+    data = request.json or {}
+    new_profile = data.get('profile', 'auto')
+    if new_profile not in ('auto', 'light', 'balanced', 'performance'):
+        return jsonify({'success': False, 'error': f"Perfil '{new_profile}' no es válido."}), 400
+
+    save_setting('system_profile', new_profile)
+    if not system_profiler:
+        system_profiler = SystemProfiler(settings_profile=new_profile)
+    else:
+        system_profiler.set_profile(new_profile)
+
+    effective_prof = system_profiler.active_profile
+    ai_available = system_profiler.ai_info.get('is_available', False)
+
+    # Auto-acomodación en tiempo real de detectores y cámaras
+    if effective_prof == 'light' or not ai_available:
+        if object_detector:
+            object_detector.active = False
+        for cid, cam in cameras.items():
+            cam['ai_filter'] = False
+            cam['auto_tracking'] = False
+            if cam.get('motion'):
+                cam['motion'].set_ai_filter(False)
+        logger.info(f"Sistema reconfigurado en caliente a Modo NVR Ligero ({effective_prof})")
+    elif effective_prof in ('balanced', 'performance'):
+        if object_detector and ai_available:
+            object_detector.active = True
+        for cid, cam in cameras.items():
+            cam['ai_filter'] = True
+            cam['auto_tracking'] = True
+            if cam.get('motion'):
+                cam['motion'].set_ai_filter(True)
+        logger.info(f"Sistema reconfigurado en caliente a Modo IA ({effective_prof})")
+
+    return jsonify({'success': True, 'summary': system_profiler.get_summary()})
 
 @app.route('/api/scanner/presets')
 def scanner_presets():
@@ -789,7 +854,16 @@ def index():
     sens_val = settings.get('motion_threshold', 4000)
     conf_val = int(settings.get('confidence_threshold', 0.45) * 100)
     sv = _static_version()
-    return render_template('index.html', lan_ip=lan_ip, port=port, sens_val=sens_val, conf_val=conf_val, static_version=sv)
+    prof_data = system_profiler.get_summary() if system_profiler else SystemProfiler().get_summary()
+    return render_template(
+        'index.html',
+        lan_ip=lan_ip,
+        port=port,
+        sens_val=sens_val,
+        conf_val=conf_val,
+        static_version=sv,
+        system_profile=prof_data
+    )
 
 @app.route('/api/status')
 def status():
@@ -855,6 +929,7 @@ def status():
             'status_message': is_motion_capture_allowed('cam1')[1]
         },
         'storage': storage,
+        'system_profile': system_profiler.get_summary() if system_profiler else SystemProfiler().get_summary(),
         'timestamp': datetime.now().isoformat()
     })
 

@@ -55,5 +55,6 @@
     ]
   },
   "cam2_ptz_password": "admin",
-  "cam2_ptz_user": "admin"
+  "cam2_ptz_user": "admin",
+  "system_profile": "auto"
 }
