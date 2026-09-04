@@ -5,6 +5,7 @@ import socket
 import cv2
 import json
 import threading
+import shutil
 from queue import Queue
 from datetime import datetime
 from pathlib import Path
@@ -480,7 +481,7 @@ def init_components():
         cam['motion_detection'] = cam_conf.get('motion_detection', settings.get('motion_detection', True))
         
         logger.info(f"Iniciando {cam['name']} -> {cam['rtsp_url']} (Tracking: {cam['auto_tracking']}, EventRec: {cam['event_recording']}, 24/7: {cam['continuous_recording']})")
-        cam['stream'] = VideoStream(cam['rtsp_url'])
+        cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam_conf.get('fallback_url'))
         
         m_thresh = cam_conf.get('motion_threshold', settings.get('motion_threshold', 4000))
         m_det = MotionDetector(threshold=m_thresh)
@@ -803,7 +804,8 @@ def status():
             'auto_tracking': c.get('auto_tracking', True),
             'ai_filter': c['motion'].is_ai_filter_enabled() if c['motion'] else True,
             'motion_threshold': c['motion'].threshold if c['motion'] else 4000,
-            'home_return_delay': cam_home_delay
+            'home_return_delay': cam_home_delay,
+            'stream_fallback': st.is_using_fallback() if st and hasattr(st, 'is_using_fallback') else False
         }
     
     # Almacenamiento combinado
@@ -1297,15 +1299,99 @@ def serve_snapshot(filename):
         return send_from_directory(str(legacy), filename)
     return 'No encontrado', 404
 
+def _throttled_send_video(file_path):
+    """
+    Envía un archivo de video con control de tasa (Bandwidth Pacing) para evitar
+    saturar la red del módem y afectar a otros dispositivos.
+    Soporta HTTP 206 Partial Content (Range Requests) para seek en el reproductor.
+    Velocidad limitada a ~6 Mbps (~768 KB/s) para evitar Bufferbloat.
+    """
+    file_path = Path(file_path)
+    file_size = file_path.stat().st_size
+    
+    # Constantes de pacing
+    CHUNK_SIZE = 64 * 1024    # 64 KB por chunk
+    PACE_DELAY = 0.08         # ~80ms entre chunks → ~768 KB/s ≈ 6 Mbps
+    
+    range_header = request.headers.get('Range')
+    
+    if range_header:
+        # Parse Range: bytes=START-END
+        try:
+            byte_range = range_header.replace('bytes=', '').strip()
+            parts = byte_range.split('-')
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if parts[1] else file_size - 1
+        except (ValueError, IndexError):
+            start = 0
+            end = file_size - 1
+        
+        if start >= file_size:
+            return Response('', status=416, headers={'Content-Range': f'bytes */{file_size}'})
+        
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+        
+        def generate_range():
+            with open(file_path, 'rb') as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    read_size = min(CHUNK_SIZE, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+                    if remaining > 0:
+                        time.sleep(PACE_DELAY)
+        
+        return Response(
+            generate_range(),
+            status=206,
+            mimetype='video/mp4',
+            headers={
+                'Content-Range': f'bytes {start}-{end}/{file_size}',
+                'Accept-Ranges': 'bytes',
+                'Content-Length': content_length,
+                'Content-Type': 'video/mp4',
+                'Cache-Control': 'no-cache',
+            },
+            direct_passthrough=True
+        )
+    else:
+        # Sin Range: enviar completo pero con pacing
+        def generate_full():
+            with open(file_path, 'rb') as f:
+                while True:
+                    data = f.read(CHUNK_SIZE)
+                    if not data:
+                        break
+                    yield data
+                    time.sleep(PACE_DELAY)
+        
+        return Response(
+            generate_full(),
+            status=200,
+            mimetype='video/mp4',
+            headers={
+                'Accept-Ranges': 'bytes',
+                'Content-Length': file_size,
+                'Content-Type': 'video/mp4',
+                'Cache-Control': 'no-cache',
+            },
+            direct_passthrough=True
+        )
+
 @app.route('/clips/<date>/<filename>')
 def serve_clip(date, filename):
     for c in cameras.values():
         rec = c.get('recorder')
         if rec and (rec.clips_dir / date / filename).exists():
-            return send_from_directory(str(rec.clips_dir / date), filename, mimetype='video/mp4')
+            return _throttled_send_video(rec.clips_dir / date / filename)
     legacy = get_storage_dir() / 'clips' / date
     if (legacy / filename).exists():
-        return send_from_directory(str(legacy), filename, mimetype='video/mp4')
+        return _throttled_send_video(legacy / filename)
     return 'No encontrado', 404
 
 @app.route('/recordings/continuous/<date>/<filename>')
@@ -1313,10 +1399,10 @@ def serve_continuous_segment(date, filename):
     for c in cameras.values():
         rec = c.get('recorder')
         if rec and (rec.continuous_dir / date / filename).exists():
-            return send_from_directory(str(rec.continuous_dir / date), filename, mimetype='video/mp4')
+            return _throttled_send_video(rec.continuous_dir / date / filename)
     legacy = get_storage_dir() / 'continuous' / date
     if (legacy / filename).exists():
-        return send_from_directory(str(legacy), filename, mimetype='video/mp4')
+        return _throttled_send_video(legacy / filename)
     return 'No encontrado', 404
 @app.route('/recordings')
 def recordings_page():
@@ -1440,9 +1526,17 @@ def get_all_media():
     media_list.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
     return jsonify(media_list)
 
+# Caché en memoria para /api/storage/estimate (evita recorrer cientos de archivos en cada petición)
+_storage_estimate_cache = {'data': None, 'timestamp': 0}
+_STORAGE_CACHE_TTL = 60  # segundos
+
 @app.route('/api/storage/estimate')
 def storage_estimate():
-    """Retorna desglose del disco y cálculo de días restantes."""
+    """Retorna desglose del disco y cálculo de días restantes (con caché de 60s)."""
+    now = time.time()
+    if _storage_estimate_cache['data'] and (now - _storage_estimate_cache['timestamp'] < _STORAGE_CACHE_TTL):
+        return jsonify(_storage_estimate_cache['data'])
+    
     base_dir = get_storage_dir()
     try:
         total, used, free = shutil.disk_usage(str(base_dir))
@@ -1477,7 +1571,7 @@ def storage_estimate():
     daily_rate = 48.0 if any_continuous else 2.5
     days_left = round(free_gb / daily_rate, 1) if daily_rate > 0 else 999.0
 
-    return jsonify({
+    result = {
         'base_path': str(base_dir),
         'total_gb': total_gb,
         'used_gb': used_gb,
@@ -1491,7 +1585,10 @@ def storage_estimate():
         'total_continuous_mb': round(total_cont_mb, 1),
         'total_snapshots_mb': round(total_snaps_mb, 1),
         'cameras': cams_breakdown
-    })
+    }
+    _storage_estimate_cache['data'] = result
+    _storage_estimate_cache['timestamp'] = now
+    return jsonify(result)
 
 @app.route('/api/media/delete', methods=['POST'])
 def delete_single_media():

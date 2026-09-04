@@ -85,15 +85,27 @@ class Recorder:
                     day_dir.mkdir(parents=True, exist_ok=True)
                     
                     out_pattern = str(self.continuous_dir / "%Y-%m-%d/cam_%Y%m%d_%H%M%S.mp4")
+                    
+                    # Detectar si el encoder de hardware h264_videotoolbox está disponible
+                    use_hw_encoder = self._check_hw_encoder_available()
+                    
                     cmd = [
                         "ffmpeg", "-hide_banner", "-loglevel", "error",
                         "-rtsp_transport", "tcp",
                         "-fflags", "+genpts",
                         "-i", self.rtsp_url,
                         "-map", "0:v:0",
-                        "-c:v", "copy",
-                        "-tag:v", "hvc1"
                     ]
+                    
+                    if use_hw_encoder:
+                        # Apple Silicon VideoToolbox: ~2% CPU, calidad excelente
+                        cmd.extend(["-c:v", "h264_videotoolbox", "-b:v", "2200k"])
+                        encoder_label = "H.264 (VideoToolbox HW)"
+                    else:
+                        # Fallback software: libx264 ultrafast
+                        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"])
+                        encoder_label = "H.264 (libx264 SW)"
+                    
                     if self.has_audio:
                         cmd.extend([
                             "-map", "0:a?",
@@ -111,7 +123,7 @@ class Recorder:
                     ])
                     
                     self._stop_ffmpeg_process()
-                    logger.info(f"Iniciando FFmpeg stream-copy para grabación continua 24/7 (Audio: {'AAC' if self.has_audio else 'Desactivado'})...")
+                    logger.info(f"Iniciando FFmpeg {encoder_label} para grabación continua 24/7 (Audio: {'AAC' if self.has_audio else 'Desactivado'})...")
                     with self.ffmpeg_lock:
                         self.ffmpeg_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
@@ -154,6 +166,17 @@ class Recorder:
                         pass
                 finally:
                     self.ffmpeg_proc = None
+
+    def _check_hw_encoder_available(self):
+        """Verifica si el encoder de hardware h264_videotoolbox está disponible en el sistema."""
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=5
+            )
+            return "h264_videotoolbox" in result.stdout
+        except Exception:
+            return False
 
     # ----------------- CLIPS DE VIDEO POR EVENTO (DETECCIÓN INTELIGENTE) -----------------
     def trigger_event_clip(self, label='evento'):

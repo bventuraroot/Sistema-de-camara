@@ -12,6 +12,7 @@
       "id": "cam1",
       "name": "C\u00e1mara 1 (Tuya PTZ)",
       "rtsp_url": "rtsp://localhost:8554/C\u00e1mara_de_nubes/hd",
+      "fallback_url": "rtsp://localhost:8554/C\u00e1mara_de_nubes/sd",
       "ptz": true,
       "motion_detection": true,
       "event_recording": true,
