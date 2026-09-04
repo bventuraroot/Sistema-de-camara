@@ -533,7 +533,36 @@ window.openSnapshotModal = function(photoUrl, title, clipUrl, startWithVideo = f
     snapshotModal.style.display = 'flex';
 };
 
+let liveFeedsSuspendedForPlayback = false;
+
+function pauseLiveFeedsForPlayback() {
+    if (liveFeedsSuspendedForPlayback) return;
+    if (videoFeedCam1 && videoFeedCam1.src && !videoFeedCam1.src.startsWith('data:')) {
+        videoFeedCam1.dataset.savedPlaybackSrc = videoFeedCam1.src;
+        videoFeedCam1.src = BLANK_FRAME;
+    }
+    if (videoFeedCam2 && videoFeedCam2.src && !videoFeedCam2.src.startsWith('data:')) {
+        videoFeedCam2.dataset.savedPlaybackSrc = videoFeedCam2.src;
+        videoFeedCam2.src = BLANK_FRAME;
+    }
+    liveFeedsSuspendedForPlayback = true;
+}
+
+function resumeLiveFeedsAfterPlayback() {
+    if (!liveFeedsSuspendedForPlayback) return;
+    if (videoFeedCam1 && videoFeedCam1.dataset.savedPlaybackSrc) {
+        videoFeedCam1.src = videoFeedCam1.dataset.savedPlaybackSrc;
+        delete videoFeedCam1.dataset.savedPlaybackSrc;
+    }
+    if (videoFeedCam2 && videoFeedCam2.dataset.savedPlaybackSrc) {
+        videoFeedCam2.src = videoFeedCam2.dataset.savedPlaybackSrc;
+        delete videoFeedCam2.dataset.savedPlaybackSrc;
+    }
+    liveFeedsSuspendedForPlayback = false;
+}
+
 function showPhotoTab() {
+    resumeLiveFeedsAfterPlayback();
     modalImage.style.display = 'block';
     modalVideo.style.display = 'none';
     modalVideo.pause();
@@ -542,6 +571,7 @@ function showPhotoTab() {
 }
 
 function showVideoTab() {
+    pauseLiveFeedsForPlayback();
     modalImage.style.display = 'none';
     modalVideo.style.display = 'block';
     modalTabVideo.classList.add('active');
@@ -558,6 +588,7 @@ function closeModal() {
     modalVideo.pause();
     modalVideo.removeAttribute('src');
     modalVideo.load();
+    resumeLiveFeedsAfterPlayback();
 }
 
 modalCloseBtn.addEventListener('click', closeModal);

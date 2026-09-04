@@ -23,8 +23,9 @@ fi
 
 # 2. Detener contenedor Docker del Bridge Tuya
 if command -v docker &> /dev/null; then
-    if docker ps | grep -q "tuya-bridge"; then
-        echo "🔻 Deteniendo contenedor Docker tuya-bridge..."
+    if docker ps | grep -E -q "tuya-bridge|tuya-rtsp-bridge"; then
+        echo "🔻 Deteniendo contenedor Docker Tuya Bridge..."
+        docker stop tuya-rtsp-bridge tuya-bridge > /dev/null 2>&1
         docker compose stop tuya-bridge > /dev/null 2>&1
         echo "✅ Contenedor Docker detenido."
     else

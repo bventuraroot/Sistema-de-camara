@@ -46,7 +46,29 @@ class VideoStream:
         self._primary_probe_interval = 120
         self._request_switch_primary = False
         self._probe_in_progress = False
+        self._last_bridge_restart_attempt = 0
         self._start_stream()
+
+    def _check_and_heal_tuya_bridge(self):
+        """Si el stream local de Tuya (puerto 8554) falla o se congela, solicita el reinicio del motor RTSP en :8787."""
+        if '8554' not in str(self.rtsp_url) and '8554' not in str(self.primary_url):
+            return
+        now = time.time()
+        if now - getattr(self, '_last_bridge_restart_attempt', 0) < 40:
+            return
+        self._last_bridge_restart_attempt = now
+        
+        def do_restart():
+            try:
+                import urllib.request
+                logger.warning("🔄 [Watchdog Tuya] Stream RTSP en :8554 inaccesible. Solicitando autorrecuperación a http://127.0.0.1:8787/api/restart/rtsp...")
+                req = urllib.request.Request("http://127.0.0.1:8787/api/restart/rtsp", data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    logger.info(f"✅ [Watchdog Tuya] Motor RTSP Tuya reiniciado con éxito (HTTP {resp.status}).")
+            except Exception as e:
+                logger.debug(f"[Watchdog Tuya] No se pudo comunicar con API Tuya Bridge (:8787): {e}")
+                
+        threading.Thread(target=do_restart, daemon=True, name="tuya-rtsp-autoheal").start()
     
     def _try_open_capture(self, url):
         """Intenta abrir una captura RTSP. Retorna True si el stream se abrió y entrega al menos 1 frame."""
@@ -101,6 +123,10 @@ class VideoStream:
                             f"No se pudo conectar al stream RTSP ({current_url}). "
                             f"Fallo #{self._consecutive_connect_failures}. Reintentando..."
                         )
+                        
+                        # Disparar autoreparación del bridge si aplica
+                        if self._consecutive_connect_failures >= 2:
+                            self._check_and_heal_tuya_bridge()
                         
                         # Si hay fallback y ya fallamos 2+ veces en la URL primaria, conmutar
                         if (self.fallback_url and
@@ -213,6 +239,8 @@ class VideoStream:
                             self._last_primary_probe = time.time()
                     else:
                         self._consecutive_connect_failures += 1
+                        if self._consecutive_connect_failures >= 2:
+                            self._check_and_heal_tuya_bridge()
                     
                     time.sleep(1.5)
         

@@ -8,13 +8,15 @@ echo "================================================="
 
 # Verificar que tuya-rtsp-bridge esté corriendo en Docker
 if command -v docker &> /dev/null; then
-    if ! docker ps | grep -q "tuya-rtsp-bridge"; then
-        echo "⚠️  El contenedor tuya-rtsp-bridge no está activo."
+    if ! docker ps | grep -E -q "tuya-rtsp-bridge|tuya-bridge"; then
+        echo "⚠️  El contenedor Tuya Bridge no está activo."
         echo "Iniciando tuya-rtsp-bridge en Docker..."
-        docker compose up -d tuya-bridge
+        docker compose up -d tuya-bridge 2>/dev/null || docker start tuya-rtsp-bridge 2>/dev/null
         sleep 3
     else
         echo "✅ Bridge Tuya RTSP activo en Docker (:8554, :8787)"
+        # Refrescar motor RTSP para asegurar que no haya sesiones huérfanas
+        curl -s -m 2 -X POST http://127.0.0.1:8787/api/restart/rtsp > /dev/null 2>&1 || true
     fi
 fi
 

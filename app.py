@@ -9,7 +9,7 @@ import shutil
 from queue import Queue
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, Response, jsonify, request, send_from_directory
+from flask import Flask, render_template, Response, jsonify, request, send_from_directory, send_file
 from dotenv import load_dotenv
 import logging
 
@@ -1103,6 +1103,36 @@ def camera_settings_route(cid):
         }
     })
 
+@app.route('/api/camera/<cid>/restart', methods=['POST'])
+def restart_camera_route(cid):
+    if cid not in cameras:
+        return jsonify({'success': False, 'error': f'Cámara {cid} no encontrada'}), 404
+    
+    cam = cameras[cid]
+    logger.info(f"Solicitud de reinicio manual para {cid} ({cam['name']})")
+    
+    # Si es cam1 (Tuya) o usa el bridge en el puerto 8554, notificar también al bridge Tuya
+    if cid == 'cam1' or '8554' in cam.get('rtsp_url', ''):
+        def restart_bridge():
+            try:
+                import urllib.request
+                req = urllib.request.Request("http://127.0.0.1:8787/api/restart/rtsp", data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
+                urllib.request.urlopen(req, timeout=4)
+            except Exception as e:
+                logger.warning(f"No se pudo contactar tuya-rtsp-bridge (:8787): {e}")
+        threading.Thread(target=restart_bridge, daemon=True).start()
+
+    stream = cam.get('stream')
+    if stream:
+        try:
+            stream.stop()
+        except Exception:
+            pass
+    
+    time.sleep(0.5)
+    cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam.get('fallback_url'))
+    return jsonify({'success': True, 'message': f'Cámara {cid} reiniciada correctamente'})
+
 @app.route('/api/ptz/move', methods=['POST'])
 def ptz_move():
     data = request.get_json(force=True, silent=True) or {}
@@ -1316,99 +1346,26 @@ def serve_snapshot(filename):
         return send_from_directory(str(legacy), filename)
     return 'No encontrado', 404
 
-def _throttled_send_video(file_path):
+def _send_video_file(file_path):
     """
-    Envía un archivo de video con control de tasa (Bandwidth Pacing) para evitar
-    saturar la red del módem y afectar a otros dispositivos.
-    Soporta HTTP 206 Partial Content (Range Requests) para seek en el reproductor.
-    Velocidad limitada a ~6 Mbps (~768 KB/s) para evitar Bufferbloat.
+    Envía un archivo de video con soporte completo HTTP 206 (Range Requests),
+    permitiendo adelantar/retroceder (seek) de forma instantánea sin bloquear
+    los hilos de trabajo de Flask ni saturar la transmisión en vivo de las cámaras.
     """
-    file_path = Path(file_path)
-    file_size = file_path.stat().st_size
-    
-    # Constantes de pacing
-    CHUNK_SIZE = 64 * 1024    # 64 KB por chunk
-    PACE_DELAY = 0.08         # ~80ms entre chunks → ~768 KB/s ≈ 6 Mbps
-    
-    range_header = request.headers.get('Range')
-    
-    if range_header:
-        # Parse Range: bytes=START-END
-        try:
-            byte_range = range_header.replace('bytes=', '').strip()
-            parts = byte_range.split('-')
-            start = int(parts[0]) if parts[0] else 0
-            end = int(parts[1]) if parts[1] else file_size - 1
-        except (ValueError, IndexError):
-            start = 0
-            end = file_size - 1
-        
-        if start >= file_size:
-            return Response('', status=416, headers={'Content-Range': f'bytes */{file_size}'})
-        
-        end = min(end, file_size - 1)
-        content_length = end - start + 1
-        
-        def generate_range():
-            with open(file_path, 'rb') as f:
-                f.seek(start)
-                remaining = content_length
-                while remaining > 0:
-                    read_size = min(CHUNK_SIZE, remaining)
-                    data = f.read(read_size)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-                    if remaining > 0:
-                        time.sleep(PACE_DELAY)
-        
-        return Response(
-            generate_range(),
-            status=206,
-            mimetype='video/mp4',
-            headers={
-                'Content-Range': f'bytes {start}-{end}/{file_size}',
-                'Accept-Ranges': 'bytes',
-                'Content-Length': content_length,
-                'Content-Type': 'video/mp4',
-                'Cache-Control': 'no-cache',
-            },
-            direct_passthrough=True
-        )
-    else:
-        # Sin Range: enviar completo pero con pacing
-        def generate_full():
-            with open(file_path, 'rb') as f:
-                while True:
-                    data = f.read(CHUNK_SIZE)
-                    if not data:
-                        break
-                    yield data
-                    time.sleep(PACE_DELAY)
-        
-        return Response(
-            generate_full(),
-            status=200,
-            mimetype='video/mp4',
-            headers={
-                'Accept-Ranges': 'bytes',
-                'Content-Length': file_size,
-                'Content-Type': 'video/mp4',
-                'Cache-Control': 'no-cache',
-            },
-            direct_passthrough=True
-        )
+    p = Path(file_path)
+    if not p.exists():
+        return 'No encontrado', 404
+    return send_file(str(p), mimetype='video/mp4', conditional=True)
 
 @app.route('/clips/<date>/<filename>')
 def serve_clip(date, filename):
     for c in cameras.values():
         rec = c.get('recorder')
         if rec and (rec.clips_dir / date / filename).exists():
-            return _throttled_send_video(rec.clips_dir / date / filename)
+            return _send_video_file(rec.clips_dir / date / filename)
     legacy = get_storage_dir() / 'clips' / date
     if (legacy / filename).exists():
-        return _throttled_send_video(legacy / filename)
+        return _send_video_file(legacy / filename)
     return 'No encontrado', 404
 
 @app.route('/recordings/continuous/<date>/<filename>')
@@ -1416,10 +1373,10 @@ def serve_continuous_segment(date, filename):
     for c in cameras.values():
         rec = c.get('recorder')
         if rec and (rec.continuous_dir / date / filename).exists():
-            return _throttled_send_video(rec.continuous_dir / date / filename)
+            return _send_video_file(rec.continuous_dir / date / filename)
     legacy = get_storage_dir() / 'continuous' / date
     if (legacy / filename).exists():
-        return _throttled_send_video(legacy / filename)
+        return _send_video_file(legacy / filename)
     return 'No encontrado', 404
 @app.route('/recordings')
 def recordings_page():
