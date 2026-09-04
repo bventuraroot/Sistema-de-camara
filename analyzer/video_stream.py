@@ -44,6 +44,8 @@ class VideoStream:
         self._last_primary_probe = 0
         # Intervalo entre sondeos de recuperación de la URL primaria (segundos)
         self._primary_probe_interval = 120
+        self._request_switch_primary = False
+        self._probe_in_progress = False
         self._start_stream()
     
     def _try_open_capture(self, url):
@@ -59,7 +61,8 @@ class VideoStream:
                 return None
             
             # Verificar que realmente entrega frames (evitar streams fantasma con width=0)
-            deadline = time.time() + 4.0
+            # En cámaras en la nube (Tuya/go2rtc), la negociación WebRTC y el primer I-frame pueden tardar 4-6s.
+            deadline = time.time() + 10.0
             while time.time() < deadline:
                 ret = cap.grab()
                 if ret:
@@ -160,6 +163,16 @@ class VideoStream:
                                 self.frame = frame
                                 self.connected = True
                         
+                        # Si el sondeo en segundo plano detectó que la URL primaria (HD) se recuperó,
+                        # salimos limpiamente del bucle para liberar self.cap de forma segura en este mismo hilo.
+                        if self._request_switch_primary:
+                            self._request_switch_primary = False
+                            logger.info("🔄 Conmutando de vuelta a stream primario (HD) de forma segura...")
+                            self.rtsp_url = self.primary_url
+                            self.using_fallback = False
+                            self._consecutive_connect_failures = 0
+                            break
+                        
                         # Sondeo periódico: si estamos en fallback, intentar volver a primaria
                         if (self.using_fallback and
                                 self.fallback_url and
@@ -205,6 +218,10 @@ class VideoStream:
     
     def _probe_primary_in_background(self):
         """Sondea la URL primaria en un hilo separado sin interrumpir el stream actual."""
+        if self._probe_in_progress:
+            return
+        self._probe_in_progress = True
+        
         def probe():
             try:
                 logger.info(f"🔍 Sondeando URL primaria: {self.primary_url}")
@@ -214,23 +231,14 @@ class VideoStream:
                         cap.release()
                     except Exception:
                         pass
-                    logger.info(f"✅ URL primaria recuperada. Conmutando de vuelta a HD...")
-                    self.rtsp_url = self.primary_url
-                    self.using_fallback = False
-                    self._consecutive_connect_failures = 0
-                    # Forzar reconexión cerrando el stream actual
-                    with self.lock:
-                        self.connected = False
-                    if self.cap:
-                        try:
-                            self.cap.release()
-                        except Exception:
-                            pass
-                        self.cap = None
+                    logger.info("✅ URL primaria recuperada. Notificando conmutación segura a HD...")
+                    self._request_switch_primary = True
                 else:
-                    logger.info(f"⏳ URL primaria aún no disponible, continuando con SD.")
+                    logger.info("⏳ URL primaria aún no disponible, continuando con SD.")
             except Exception as e:
                 logger.debug(f"Error en sondeo de URL primaria: {e}")
+            finally:
+                self._probe_in_progress = False
         
         t = threading.Thread(target=probe, daemon=True, name="primary-probe")
         t.start()
