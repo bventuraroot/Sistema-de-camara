@@ -191,14 +191,15 @@ if (tabMobileCam2) tabMobileCam2.addEventListener('click', () => switchMobileCam
 // Control PTZ Táctil
 async function sendPtzMove(dir) {
     const pulseDur = (dir === 'center') ? 0.0 : 0.25;
+    const camLabel = (currentCam === 'cam1') ? 'Cam 1 (Tuya)' : 'Cam 2 (iCam365)';
     try {
         if (dir === 'center') {
-            await fetch('/api/ptz/home', {
+            showToast(`🎯 Regresando al centro (${camLabel})...`);
+            await fetch('/api/ptz/home/go', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ camera: currentCam })
+                body: JSON.stringify({ camera_id: currentCam, camera: currentCam })
             });
-            showToast('Volviendo al punto central...');
         } else {
             await fetch('/api/ptz/move', {
                 method: 'POST',
@@ -206,6 +207,7 @@ async function sendPtzMove(dir) {
                 body: JSON.stringify({
                     direction: dir,
                     duration: pulseDur,
+                    camera_id: currentCam,
                     camera: currentCam
                 })
             });
@@ -215,12 +217,60 @@ async function sendPtzMove(dir) {
     }
 }
 
+async function setNewHomePosition() {
+    const camLabel = (currentCam === 'cam1') ? 'Cámara 1' : 'Cámara 2';
+    showToast(`💾 Fijando punto central (${camLabel})...`);
+    try {
+        const resp = await fetch('/api/ptz/home/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ camera_id: currentCam, camera: currentCam })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`📍 ¡Nuevo Punto Central fijado (${camLabel})!`, 2800);
+        } else {
+            showToast('❌ Error fijando punto central');
+        }
+    } catch (e) {
+        showToast('❌ Error de conexión al fijar punto');
+    }
+}
+
+// Configuración de botones direccionales
 document.querySelectorAll('.dpad-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        const dir = btn.dataset.dir;
-        if (dir) sendPtzMove(dir);
-    });
+    const dir = btn.dataset.dir;
+    if (!dir) return;
+
+    if (dir === 'center') {
+        // En el botón central del D-Pad: tap = volver al centro, mantener 1.4s = fijar nuevo centro
+        let centerPressTimer = null;
+        let isLongPress = false;
+
+        const startPress = (e) => {
+            isLongPress = false;
+            centerPressTimer = setTimeout(() => {
+                isLongPress = true;
+                setNewHomePosition();
+            }, 1400);
+        };
+
+        const endPress = (e) => {
+            clearTimeout(centerPressTimer);
+            if (!isLongPress) {
+                sendPtzMove('center');
+            }
+        };
+
+        btn.addEventListener('pointerdown', startPress);
+        btn.addEventListener('pointerup', endPress);
+        btn.addEventListener('pointercancel', () => clearTimeout(centerPressTimer));
+    } else {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            sendPtzMove(dir);
+        });
+    }
 });
 
 // Captura de Foto
@@ -241,10 +291,28 @@ if (btnSnapPhoto) {
     });
 }
 
-// Botón Centro Home
+// Botón Centro Home en Action Grid (Tap = Ir al centro, Mantener 1.4s = Fijar centro)
 const btnCenterHome = document.getElementById('btnCenterHome');
 if (btnCenterHome) {
-    btnCenterHome.addEventListener('click', () => sendPtzMove('center'));
+    let actionCenterTimer = null;
+    let actionIsLong = false;
+
+    btnCenterHome.addEventListener('pointerdown', () => {
+        actionIsLong = false;
+        actionCenterTimer = setTimeout(() => {
+            actionIsLong = true;
+            setNewHomePosition();
+        }, 1400);
+    });
+
+    btnCenterHome.addEventListener('pointerup', () => {
+        clearTimeout(actionCenterTimer);
+        if (!actionIsLong) {
+            sendPtzMove('center');
+        }
+    });
+
+    btnCenterHome.addEventListener('pointercancel', () => clearTimeout(actionCenterTimer));
 }
 
 // Botón Refrescar
@@ -286,10 +354,10 @@ if (btnToggleTracking) {
         trackingEnabled = !trackingEnabled;
         updateTrackingButtonUI();
         try {
-            await fetch(`/api/cameras/${currentCam}/config`, {
+            await fetch(`/api/camera/${currentCam}/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ auto_tracking: trackingEnabled })
+                body: JSON.stringify({ auto_tracking: trackingEnabled, camera_id: currentCam, camera: currentCam })
             });
             showToast(`Auto-Tracking: ${trackingEnabled ? 'ACTIVADO' : 'DESACTIVADO'}`);
         } catch (e) {

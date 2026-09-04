@@ -26,11 +26,11 @@
       "name": "C\u00e1mara 2 (iCam365)",
       "rtsp_url": "rtsp://192.168.1.26:554/live/ch0",
       "ptz": true,
-      "motion_detection": false,
+      "motion_detection": true,
       "event_recording": true,
       "auto_tracking": true,
       "continuous_recording": true,
-      "ai_filter": false,
+      "ai_filter": true,
       "motion_threshold": 10000,
       "home_return_delay": 8.0
     }

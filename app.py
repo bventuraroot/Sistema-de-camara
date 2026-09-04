@@ -58,6 +58,16 @@ def add_no_cache_headers(response):
     return response
 
 SETTINGS_FILE = Path('config/settings.json')
+SETTINGS_LOCK = threading.Lock()
+
+def deep_merge(target: dict, source: dict) -> dict:
+    """Combina recursivamente dos diccionarios para preservar claves anidadas."""
+    for k, v in source.items():
+        if isinstance(v, dict) and k in target and isinstance(target[k], dict):
+            deep_merge(target[k], v)
+        else:
+            target[k] = v
+    return target
 
 def get_all_settings():
     defaults = {
@@ -74,23 +84,27 @@ def get_all_settings():
                 'id': 'cam1',
                 'name': 'Cámara 1 (Tuya PTZ)',
                 'rtsp_url': os.getenv('RTSP_URL', 'rtsp://localhost:8554/Cámara_de_nubes/hd'),
-                'ptz': True
+                'ptz': True,
+                'home_return_delay': 15.0
             },
             'cam2': {
                 'id': 'cam2',
                 'name': 'Cámara 2 (iCam365)',
                 'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://192.168.1.26:554/live/ch0'),
-                'ptz': False
+                'ptz': True,
+                'home_return_delay': 8.0
             }
         }
     }
-    if SETTINGS_FILE.exists():
-        try:
-            with open(SETTINGS_FILE, 'r') as f:
-                data = json.load(f)
-                defaults.update(data)
-        except Exception as e:
-            logger.error(f"Error leyendo {SETTINGS_FILE}: {e}")
+    with SETTINGS_LOCK:
+        if SETTINGS_FILE.exists():
+            try:
+                with open(SETTINGS_FILE, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        deep_merge(defaults, data)
+            except Exception as e:
+                logger.error(f"Error leyendo {SETTINGS_FILE}: {e}")
     return defaults
 
 def get_storage_dir() -> Path:
@@ -107,14 +121,44 @@ def get_storage_dir() -> Path:
     return p
 
 def save_setting(key, value):
-    settings = get_all_settings()
-    settings[key] = value
-    try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=2)
-    except Exception as e:
-        logger.error(f"Error guardando {SETTINGS_FILE}: {e}")
+    """Guarda una clave en settings.json de manera thread-safe y atómica."""
+    with SETTINGS_LOCK:
+        # Cargar configuración existente directamente bajo el lock
+        current_data = {}
+        if SETTINGS_FILE.exists():
+            try:
+                with open(SETTINGS_FILE, 'r') as f:
+                    current_data = json.load(f)
+            except Exception as e:
+                logger.error(f"Error cargando archivo previo en save_setting: {e}")
+        
+        # Si la clave es 'cameras', fusionar por cámara para no sobreescribir la otra cámara
+        if key == 'cameras' and isinstance(value, dict):
+            cams_dict = current_data.setdefault('cameras', {})
+            for cid, cval in value.items():
+                if isinstance(cval, dict):
+                    if cid not in cams_dict:
+                        cams_dict[cid] = {}
+                    deep_merge(cams_dict[cid], cval)
+                else:
+                    cams_dict[cid] = cval
+        else:
+            current_data[key] = value
+
+        # Escritura atómica a archivo temporal y reemplazo
+        tmp_file = SETTINGS_FILE.with_suffix('.tmp')
+        try:
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_file, 'w') as f:
+                json.dump(current_data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, SETTINGS_FILE)
+        except Exception as e:
+            logger.error(f"Error guardando atómicamente {SETTINGS_FILE}: {e}")
+            if tmp_file.exists():
+                try: tmp_file.unlink()
+                except Exception: pass
 
 # Diccionario de cámaras del sistema
 cameras = {
@@ -738,6 +782,13 @@ def status():
         online = st.is_connected() if st else False
         if online:
             total_online = True
+        # Obtener demora de retorno configurada
+        cam_home_delay = 5.0
+        if cid == 'cam1' and ptz_controller:
+            cam_home_delay = getattr(ptz_controller, 'home_return_delay', 5.0)
+        elif cid == 'cam2' and icam_ptz:
+            cam_home_delay = getattr(icam_ptz, 'home_return_delay', 5.0)
+
         cams_status[cid] = {
             'id': cid,
             'name': c['name'],
@@ -751,7 +802,8 @@ def status():
             'event_recording': c.get('event_recording', True),
             'auto_tracking': c.get('auto_tracking', True),
             'ai_filter': c['motion'].is_ai_filter_enabled() if c['motion'] else True,
-            'motion_threshold': c['motion'].threshold if c['motion'] else 4000
+            'motion_threshold': c['motion'].threshold if c['motion'] else 4000,
+            'home_return_delay': cam_home_delay
         }
     
     # Almacenamiento combinado
@@ -948,6 +1000,7 @@ def toggle_event_recording():
     return jsonify({'event_recording': new_val, 'active': new_val})
 
 @app.route('/api/camera/<cid>/settings', methods=['GET', 'POST'])
+@app.route('/api/cameras/<cid>/config', methods=['GET', 'POST'])
 def camera_settings_route(cid):
     if cid not in cameras:
         return jsonify({'success': False, 'error': f'Cámara {cid} no encontrada'}), 404
@@ -974,6 +1027,10 @@ def camera_settings_route(cid):
             val = bool(data['auto_tracking'])
             cam['auto_tracking'] = val
             sc[cid]['auto_tracking'] = val
+            if cid == 'cam2' and icam_ptz:
+                icam_ptz.set_active(val)
+            elif cid == 'cam1' and ptz_controller:
+                ptz_controller.set_active(val)
             
         if 'continuous_recording' in data:
             val = bool(data['continuous_recording'])
@@ -992,10 +1049,26 @@ def camera_settings_route(cid):
             val = int(data['motion_threshold'])
             if cam['motion']: cam['motion'].threshold = val
             sc[cid]['motion_threshold'] = val
+
+        if 'home_return_delay' in data:
+            try:
+                h_delay = max(2.0, float(data['home_return_delay']))
+                sc[cid]['home_return_delay'] = h_delay
+                if cid == 'cam2' and icam_ptz:
+                    icam_ptz.set_home_delay(h_delay)
+                elif cid == 'cam1' and ptz_controller:
+                    ptz_controller.set_home_delay(h_delay)
+            except Exception: pass
             
         save_setting('cameras', sc)
         logger.info(f"Configuración guardada para {cam['name']}: {sc[cid]}")
     
+    h_delay = 5.0
+    if cid == 'cam1' and ptz_controller:
+        h_delay = getattr(ptz_controller, 'home_return_delay', 5.0)
+    elif cid == 'cam2' and icam_ptz:
+        h_delay = getattr(icam_ptz, 'home_return_delay', 5.0)
+
     return jsonify({
         'success': True,
         'camera_id': cid,
@@ -1006,7 +1079,8 @@ def camera_settings_route(cid):
             'auto_tracking': cam.get('auto_tracking', True),
             'continuous_recording': cam.get('continuous_recording', False),
             'ai_filter': cam['motion'].is_ai_filter_enabled() if cam['motion'] else True,
-            'motion_threshold': cam['motion'].threshold if cam['motion'] else 4000
+            'motion_threshold': cam['motion'].threshold if cam['motion'] else 4000,
+            'home_return_delay': h_delay
         }
     })
 
@@ -1014,16 +1088,23 @@ def camera_settings_route(cid):
 def ptz_move():
     data = request.get_json(force=True, silent=True) or {}
     direction = data.get('direction', 'stop')
-    cid = data.get('camera_id', 'cam1')
+    cid = data.get('camera_id') or data.get('camera') or 'cam1'
+    dur = data.get('duration')
     
     if cid == 'cam2':
         if icam_ptz:
-            success = icam_ptz.manual_move(direction)
+            if direction != 'stop' and dur and float(dur) > 0:
+                success = icam_ptz.pulse_move(direction, duration=float(dur))
+            else:
+                success = icam_ptz.manual_move(direction)
             return jsonify({'success': success, 'direction': direction, 'camera_id': 'cam2'})
         return jsonify({'error': 'Controlador PTZ iCam365 no disponible'}), 500
     else:
         if ptz_controller:
-            success = ptz_controller.manual_move(direction)
+            if direction != 'stop' and dur and float(dur) > 0:
+                success = ptz_controller.pulse_move(direction, duration=float(dur))
+            else:
+                success = ptz_controller.manual_move(direction)
             return jsonify({'success': success, 'direction': direction, 'camera_id': 'cam1'})
         return jsonify({'error': 'Controlador PTZ no disponible'}), 500
 
@@ -1043,7 +1124,7 @@ def ptz_cam2_config():
 @app.route('/api/ptz/home/set', methods=['POST'])
 def ptz_set_home():
     data = request.get_json(force=True, silent=True) or {}
-    cid = data.get('camera_id', 'cam1')
+    cid = data.get('camera_id') or data.get('camera') or 'cam1'
     if cid == 'cam2':
         if icam_ptz:
             success = icam_ptz.set_home_position()
@@ -1055,10 +1136,11 @@ def ptz_set_home():
             return jsonify({'success': success, 'camera_id': 'cam1', 'message': 'Punto Central fijado para Cámara 1'})
         return jsonify({'success': False, 'error': 'Controlador PTZ Cámara 1 no disponible'}), 500
 
+@app.route('/api/ptz/home', methods=['POST'])
 @app.route('/api/ptz/home/go', methods=['POST'])
 def ptz_go_home():
     data = request.get_json(force=True, silent=True) or {}
-    cid = data.get('camera_id', 'cam1')
+    cid = data.get('camera_id') or data.get('camera') or 'cam1'
     if cid == 'cam2':
         if icam_ptz:
             success = icam_ptz.return_to_home()
@@ -1073,8 +1155,8 @@ def ptz_go_home():
 @app.route('/api/ptz/home/delay', methods=['POST'])
 def set_home_delay_route():
     data = request.get_json(force=True, silent=True) or {}
-    delay = float(data.get('delay', 5))
-    cid = data.get('camera_id', 'cam1')
+    delay = max(2.0, float(data.get('delay', 5)))
+    cid = data.get('camera_id') or data.get('camera') or 'cam1'
     if cid == 'cam2' and icam_ptz:
         icam_ptz.set_home_delay(delay)
     elif cid == 'cam1' and ptz_controller:

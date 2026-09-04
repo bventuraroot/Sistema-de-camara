@@ -1146,6 +1146,22 @@ function initPtzControls() {
     if (ptzSelectCam1) ptzSelectCam1.addEventListener('click', () => setPtzTargetCamera('cam1'));
     if (ptzSelectCam2) ptzSelectCam2.addEventListener('click', () => setPtzTargetCamera('cam2'));
 
+    // Sincronizar cámara PTZ seleccionada al hacer clic sobre el cuadro de video en mosaico
+    const cameraBoxCam1 = document.getElementById('cameraBoxCam1');
+    const cameraBoxCam2 = document.getElementById('cameraBoxCam2');
+    if (cameraBoxCam1) {
+        cameraBoxCam1.addEventListener('click', (e) => {
+            if (e.target.closest('button, input, a, select')) return;
+            setPtzTargetCamera('cam1');
+        });
+    }
+    if (cameraBoxCam2) {
+        cameraBoxCam2.addEventListener('click', (e) => {
+            if (e.target.closest('button, input, a, select')) return;
+            setPtzTargetCamera('cam2');
+        });
+    }
+
     if (saveCam2PasswordBtn) {
         saveCam2PasswordBtn.addEventListener('click', async () => {
             const pwd = cam2PasswordInput ? cam2PasswordInput.value.trim() : '';
@@ -1227,11 +1243,11 @@ function initPtzControls() {
                 const res = await fetch('/api/ptz/home/set', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ camera_id: selectedPtzCamera })
+                    body: JSON.stringify({ camera_id: selectedPtzCamera, camera: selectedPtzCamera })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    showHomeToast(`✅ Punto Central guardado (${camLabel})`);
+                    showHomeToast(`✅ Punto Central fijado (${camLabel})`);
                 } else {
                     showHomeToast('❌ Error guardando punto', true);
                 }
@@ -1249,7 +1265,7 @@ function initPtzControls() {
                 const res = await fetch('/api/ptz/home/go', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ camera_id: selectedPtzCamera })
+                    body: JSON.stringify({ camera_id: selectedPtzCamera, camera: selectedPtzCamera })
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -1279,11 +1295,12 @@ function initPtzControls() {
                 const res = await fetch('/api/ptz/home/delay', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ delay, camera_id: selectedPtzCamera })
+                    body: JSON.stringify({ delay, camera_id: selectedPtzCamera, camera: selectedPtzCamera })
                 });
                 const data = await res.json();
                 if (data.success && homeDelayToast) {
-                    homeDelayToast.textContent = `✅ Retorno en ${delay}s guardado`;
+                    const camLabel = selectedPtzCamera === 'cam1' ? 'Cámara 1' : 'Cámara 2';
+                    homeDelayToast.textContent = `✅ Retorno en ${delay}s guardado (${camLabel})`;
                     setTimeout(() => { homeDelayToast.style.display = 'none'; }, 2500);
                 }
             } catch (e) {
@@ -1308,18 +1325,19 @@ function updateHomeStatusUI(status) {
         });
     }
 
+    const camLabel = (selectedPtzCamera === 'cam1') ? 'Cam 1' : 'Cam 2';
     const homeCountdownChip = document.getElementById('homeCountdownChip');
     if (homeCountdownChip) {
         if (activePtz.returning_home) {
-            homeCountdownChip.textContent = '🔄 Regresando al centro...';
+            homeCountdownChip.textContent = `🔄 ${camLabel}: Regresando al centro...`;
             homeCountdownChip.style.background = 'rgba(245, 158, 11, 0.2)';
             homeCountdownChip.style.color = '#fbbf24';
         } else if (activePtz.has_offset && activePtz.time_until_return > 0) {
-            homeCountdownChip.textContent = `⏳ Regresa al centro en ${activePtz.time_until_return}s`;
+            homeCountdownChip.textContent = `⏳ ${camLabel}: Regresa en ${activePtz.time_until_return}s`;
             homeCountdownChip.style.background = 'rgba(56, 189, 248, 0.2)';
             homeCountdownChip.style.color = '#38bdf8';
         } else {
-            homeCountdownChip.textContent = '✅ En Punto Central';
+            homeCountdownChip.textContent = `✅ ${camLabel}: En Punto Central`;
             homeCountdownChip.style.background = 'rgba(52, 211, 153, 0.15)';
             homeCountdownChip.style.color = '#34d399';
         }

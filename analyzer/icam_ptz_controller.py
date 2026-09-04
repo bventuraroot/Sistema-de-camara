@@ -100,11 +100,20 @@ class ICam365PTZController:
 
     def manual_move(self, direction: str) -> bool:
         """Mueve la cámara mientras el usuario mantiene presionado el botón."""
+        with self.lock:
+            if self.returning_home:
+                return False
+
         if direction == "stop":
             def do_stop():
                 with self.lock:
                     self.is_moving = False
-                    elapsed = max(0.2, min(3.0, time.time() - self.manual_start_time))
+                    if self.manual_start_time <= 0:
+                        elapsed = 0.25
+                    else:
+                        elapsed = max(0.2, min(3.0, time.time() - self.manual_start_time))
+                    self.manual_start_time = 0.0
+
                     if self.last_direction == "right":
                         self.pan_offset += elapsed
                     elif self.last_direction == "left":
@@ -113,6 +122,10 @@ class ICam365PTZController:
                         self.tilt_offset += elapsed
                     elif self.last_direction == "up":
                         self.tilt_offset -= elapsed
+
+                    # Acotar límites físicos acumulados
+                    self.pan_offset = max(-6.5, min(6.5, self.pan_offset))
+                    self.tilt_offset = max(-2.5, min(2.5, self.tilt_offset))
 
                     self.last_direction = "stop"
                     self.last_target_time = time.time()
@@ -146,6 +159,8 @@ class ICam365PTZController:
 
         def execute_pulse():
             with self.lock:
+                if self.is_moving or self.returning_home:
+                    return  # Ocupado o retornando, evitar pulsos concurrentes
                 self.is_moving = True
                 self.last_direction = direction
                 if direction == "right":
@@ -156,6 +171,10 @@ class ICam365PTZController:
                     self.tilt_offset += dur
                 elif direction == "up":
                     self.tilt_offset -= dur
+
+                # Acotar límites físicos
+                self.pan_offset = max(-6.5, min(6.5, self.pan_offset))
+                self.tilt_offset = max(-2.5, min(2.5, self.tilt_offset))
 
             try:
                 self._send_direction(direction)
@@ -176,7 +195,7 @@ class ICam365PTZController:
         now = time.time()
         with self.lock:
             self.last_target_time = now
-            if self.is_moving or (now - self.last_move_time) < self.cooldown:
+            if self.returning_home or self.is_moving or (now - self.last_move_time) < self.cooldown:
                 return False, None
 
         h, w = frame_shape[:2]
@@ -228,47 +247,91 @@ class ICam365PTZController:
             self.tilt_offset = 0.0
             self.last_target_time = time.time()
             self.returning_home = False
+            self.is_moving = False
             logger.info("📍 [Cámara 2] Punto Central fijado con éxito en la orientación actual.")
             return True
 
     def return_to_home(self) -> bool:
-        """Regresa la Cámara 2 al Punto Central fijado compensando los giros acumulados."""
+        """
+        Regresa la Cámara 2 al Punto Central fijado compensando los giros acumulados
+        en pasos progresivos y sin truncamiento brusco.
+        """
         def do_return():
-            with self.lock:
-                if self.is_moving or self.returning_home:
-                    return
-                self.returning_home = True
-                pan = self.pan_offset
-                tilt = self.tilt_offset
+            wait_start = time.time()
+            pan = 0.0
+            tilt = 0.0
+            while time.time() - wait_start < 1.5:
+                with self.lock:
+                    if self.returning_home:
+                        return
+                    if not self.is_moving:
+                        self.returning_home = True
+                        pan = self.pan_offset
+                        tilt = self.tilt_offset
+                        break
+                time.sleep(0.1)
+            else:
+                with self.lock:
+                    if self.returning_home:
+                        return
+                    self.returning_home = True
+                    self.is_moving = False
+                    pan = self.pan_offset
+                    tilt = self.tilt_offset
 
             try:
-                # 1. Retorno Horizontal
-                if abs(pan) >= 0.10:
+                # 1. Retorno Horizontal Multi-Paso sin truncar offset
+                while abs(pan) >= 0.10:
                     rev_dir = "left" if pan > 0 else "right"
-                    dur = min(2.5, abs(pan))
-                    logger.info(f"🔄 [Cámara 2] Retornando al centro: girando '{rev_dir}' durante {dur:.2f}s")
+                    step_dur = min(2.0, abs(pan))
+                    logger.info(f"🔄 [Cámara 2] Retornando al centro horizontal: '{rev_dir}' por {step_dur:.2f}s (restante: {abs(pan):.2f}s)")
                     self._send_direction(rev_dir)
-                    time.sleep(dur)
+                    time.sleep(step_dur)
                     self._send_stop()
-                    time.sleep(0.4)
 
-                # 2. Retorno Vertical
-                if abs(tilt) >= 0.10:
+                    if pan > 0:
+                        pan = max(0.0, pan - step_dur)
+                    else:
+                        pan = min(0.0, pan + step_dur)
+
+                    with self.lock:
+                        self.pan_offset = pan
+
+                    if abs(pan) >= 0.10:
+                        time.sleep(0.3)
+
+                # 2. Retorno Vertical Multi-Paso
+                while abs(tilt) >= 0.10:
                     rev_dir = "up" if tilt > 0 else "down"
-                    dur = min(1.5, abs(tilt))
-                    logger.info(f"🔄 [Cámara 2] Retornando al centro vertical: girando '{rev_dir}' durante {dur:.2f}s")
+                    step_dur = min(1.2, abs(tilt))
+                    logger.info(f"🔄 [Cámara 2] Retornando al centro vertical: '{rev_dir}' por {step_dur:.2f}s (restante: {abs(tilt):.2f}s)")
                     self._send_direction(rev_dir)
-                    time.sleep(dur)
+                    time.sleep(step_dur)
                     self._send_stop()
-                    time.sleep(0.4)
+
+                    if tilt > 0:
+                        tilt = max(0.0, tilt - step_dur)
+                    else:
+                        tilt = min(0.0, tilt + step_dur)
+
+                    with self.lock:
+                        self.tilt_offset = tilt
+
+                    if abs(tilt) >= 0.10:
+                        time.sleep(0.3)
 
                 with self.lock:
                     self.pan_offset = 0.0
                     self.tilt_offset = 0.0
+                    self.last_direction = "home"
+                    self.last_target_time = time.time()
                     logger.info("✅ [Cámara 2] Regreso al Punto Central completado exitosamente.")
+            except Exception as e:
+                logger.error(f"Error en return_to_home Cámara 2: {e}")
             finally:
                 with self.lock:
                     self.returning_home = False
+                    self.is_moving = False
                     self.last_move_time = time.time()
 
         threading.Thread(target=do_return, daemon=True, name="icam-return-home").start()

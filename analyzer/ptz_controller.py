@@ -80,20 +80,16 @@ class PTZController:
 
     def manual_move(self, direction: str) -> bool:
         """
-        Ejecuta un movimiento manual solicitado por el usuario desde el panel web.
-        Garantiza un pulso mínimo de 0.35s para que los clics o toques cortos muevan
-        los engranajes físicos de la cámara visiblemente antes de frenar.
+        Inicia o detiene movimiento continuo Tuya.
+        Bloquea nuevas órdenes si la cámara está en proceso de volver al centro.
         """
-        valid_directions = {"left", "right", "up", "down", "stop", "upleft", "upright", "downleft", "downright"}
-        if direction not in valid_directions:
-            logger.warning(f"Dirección PTZ no válida: {direction}")
-            return False
+        with self.lock:
+            if self.returning_home:
+                return False
         
         def run_manual():
             if direction == "stop":
                 now = time.time()
-                # Protección: si manual_start_time nunca fue fijado o es 0 (arranque),
-                # usar el mínimo para no corromper el offset con un timestamp Unix completo
                 if self.manual_start_time <= 0:
                     elapsed = self.min_manual_duration
                 else:
@@ -118,6 +114,10 @@ class PTZController:
                     elif prev_dir == "down": self.tilt_offset += elapsed
                     elif prev_dir == "up": self.tilt_offset -= elapsed
                     
+                    # Acotar límites físicos acumulados
+                    self.pan_offset = max(-6.5, min(6.5, self.pan_offset))
+                    self.tilt_offset = max(-2.5, min(2.5, self.tilt_offset))
+
                     self.last_direction = "stop"
                     self.last_target_time = time.time()
                     self.last_move_time = time.time()
@@ -143,10 +143,9 @@ class PTZController:
         dur = duration or self.pulse_duration
         
         def execute_pulse():
-            # Actualizar estado ANTES de enviar HTTP (sin bloquear el lock durante HTTP)
             with self.lock:
                 if self.is_moving or self.returning_home:
-                    return  # Ya en movimiento, no apilar pulsos
+                    return  # Ya en movimiento o retornando a casa, no apilar pulsos
                 self.is_moving = True
                 self.last_direction = direction
                 self.move_count += 1
@@ -159,6 +158,10 @@ class PTZController:
                     self.tilt_offset += dur
                 elif direction == "up":
                     self.tilt_offset -= dur
+                
+                # Acotar límites físicos
+                self.pan_offset = max(-6.5, min(6.5, self.pan_offset))
+                self.tilt_offset = max(-2.5, min(2.5, self.tilt_offset))
             
             try:
                 # 1. Iniciar movimiento (fuera del lock)
@@ -181,50 +184,92 @@ class PTZController:
             self.tilt_offset = 0.0
             self.last_target_time = time.time()
             self.returning_home = False
-            logger.info("📍 Punto Central fijado con éxito en la orientación actual.")
+            self.is_moving = False
+            logger.info("📍 [Cam 1 Tuya] Punto Central fijado con éxito en la orientación actual.")
             return True
 
     def return_to_home(self) -> bool:
-        """Regresa la cámara al Punto Central fijado compensando los giros acumulados."""
+        """
+        Regresa la cámara al Punto Central fijado compensando los giros acumulados
+        en pasos progresivos y sin truncamiento brusco.
+        """
         def do_return():
-            with self.lock:
-                if self.is_moving or self.returning_home:
-                    return
-                self.returning_home = True
-                pan = self.pan_offset
-                tilt = self.tilt_offset
+            # Esperar si hay un movimiento en curso para no colisionar
+            wait_start = time.time()
+            pan = 0.0
+            tilt = 0.0
+            while time.time() - wait_start < 1.5:
+                with self.lock:
+                    if self.returning_home:
+                        return  # Ya hay otro hilo retornando
+                    if not self.is_moving:
+                        self.returning_home = True
+                        pan = self.pan_offset
+                        tilt = self.tilt_offset
+                        break
+                time.sleep(0.1)
+            else:
+                with self.lock:
+                    if self.returning_home:
+                        return
+                    self.returning_home = True
+                    self.is_moving = False
+                    pan = self.pan_offset
+                    tilt = self.tilt_offset
 
             try:
-                # 1. Retorno Horizontal
-                if abs(pan) >= 0.12:
+                # 1. Retorno Horizontal Multi-Paso sin truncar offset
+                while abs(pan) >= 0.10:
                     rev_dir = "left" if pan > 0 else "right"
-                    dur = min(2.5, abs(pan))
-                    logger.info(f"🔄 Retornando al centro: girando '{rev_dir}' durante {dur:.2f}s")
+                    step_dur = min(2.0, abs(pan))
+                    logger.info(f"🔄 [Cam 1 Tuya] Retornando al centro: girando '{rev_dir}' durante {step_dur:.2f}s (restante: {abs(pan):.2f}s)")
                     self._post_command(rev_dir)
-                    time.sleep(dur)
+                    time.sleep(step_dur)
                     self._post_command("stop")
-                    time.sleep(0.3)
 
-                # 2. Retorno Vertical
-                if abs(tilt) >= 0.12:
+                    if pan > 0:
+                        pan = max(0.0, pan - step_dur)
+                    else:
+                        pan = min(0.0, pan + step_dur)
+
+                    with self.lock:
+                        self.pan_offset = pan
+
+                    if abs(pan) >= 0.10:
+                        time.sleep(0.25)
+
+                # 2. Retorno Vertical Multi-Paso
+                while abs(tilt) >= 0.10:
                     rev_dir = "up" if tilt > 0 else "down"
-                    dur = min(1.5, abs(tilt))
-                    logger.info(f"🔄 Retornando al centro: inclinando '{rev_dir}' durante {dur:.2f}s")
+                    step_dur = min(1.2, abs(tilt))
+                    logger.info(f"🔄 [Cam 1 Tuya] Retornando al centro vertical: '{rev_dir}' durante {step_dur:.2f}s (restante: {abs(tilt):.2f}s)")
                     self._post_command(rev_dir)
-                    time.sleep(dur)
+                    time.sleep(step_dur)
                     self._post_command("stop")
-                    time.sleep(0.3)
+
+                    if tilt > 0:
+                        tilt = max(0.0, tilt - step_dur)
+                    else:
+                        tilt = min(0.0, tilt + step_dur)
+
+                    with self.lock:
+                        self.tilt_offset = tilt
+
+                    if abs(tilt) >= 0.10:
+                        time.sleep(0.25)
 
                 with self.lock:
                     self.pan_offset = 0.0
                     self.tilt_offset = 0.0
                     self.last_direction = "home"
-                    logger.info("🎯 Cámara de vuelta en el Punto Central.")
+                    self.last_target_time = time.time()
+                    logger.info("🎯 [Cam 1 Tuya] Cámara de vuelta con éxito en el Punto Central.")
             except Exception as e:
-                logger.error(f"Error en return_to_home: {e}")
+                logger.error(f"Error en return_to_home (Cam 1 Tuya): {e}")
             finally:
                 with self.lock:
                     self.returning_home = False
+                    self.is_moving = False
                     self.last_move_time = time.time()
 
         threading.Thread(target=do_return, daemon=True, name="ptz-return-home").start()
