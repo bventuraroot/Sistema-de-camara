@@ -357,17 +357,31 @@ def camera_ai_worker(cid):
             can_alert = (now - cam['last_alert_time']) >= ALERT_COOLDOWN
             photo_allowed_by_sched, sched_msg = is_motion_capture_allowed(cid)
             
-            if motion_detected and motion_det and motion_det.is_active():
-                if motion_det.is_ai_filter_enabled() and object_detector and object_detector.is_active():
-                    matched = motion_det.match_with_ai(motion_boxes, valid_dets)
-                    # Omitir cualquier animal detectado
-                    matched = [m for m in matched if m['class'] in ALLOWED_TARGET_CLASSES]
-                    if matched and can_alert:
-                        primary = matched[0]
+            has_ai_target = bool(valid_dets)
+            has_motion = bool(motion_detected and motion_det and motion_det.is_active())
+            
+            if can_alert and (has_ai_target or has_motion):
+                ai_filter = motion_det.is_ai_filter_enabled() if motion_det else True
+                
+                if ai_filter and object_detector and object_detector.is_active():
+                    # Filtro IA activo: disparar si se detecta un objetivo inteligente (persona, auto, etc.)
+                    primary = None
+                    if valid_dets:
+                        primary = valid_dets[0]
+                    elif has_motion and motion_boxes:
+                        matched = motion_det.match_with_ai(motion_boxes, valid_dets)
+                        matched = [m for m in matched if m['class'] in ALLOWED_TARGET_CLASSES]
+                        if matched:
+                            primary = matched[0]
+                    
+                    if primary:
                         cam['last_alert_time'] = now
                         # Solo guardar foto JPG si está dentro del horario de capturas permitido
                         snap_name = rec.save_snapshot(frame, prefix=f"{cid}_{primary['class']}") if (rec and photo_allowed_by_sched) else None
                         clip_url = rec.trigger_event_clip(label=primary['class']) if rec else None
+                        
+                        if snap_name:
+                            logger.info(f"📸 Foto guardada [{cam['name']}]: {snap_name} ({primary['label']} - {int(primary['confidence'] * 100)}%)")
                         
                         event_payload = {
                             'camera_id': cid,
@@ -385,14 +399,17 @@ def camera_ai_worker(cid):
                         if alert_system:
                             alert_system.trigger(primary['class'], event_payload['message'], event_payload)
                 
-                elif not motion_det.is_ai_filter_enabled() and can_alert:
-                    # Si hay animales en el cuadro reconocidos por IA, omitir alerta de movimiento
+                elif not ai_filter and has_motion:
+                    # Filtro IA apagado: cualquier movimiento genera alerta (a menos que sea animal)
                     has_animal = any(d['class'] in ('dog', 'cat', 'bird') for d in detections)
                     if not has_animal:
                         cam['last_alert_time'] = now
-                        # Solo guardar foto JPG si está dentro del horario de capturas permitido
                         snap_name = rec.save_snapshot(frame, prefix=f"{cid}_movimiento") if (rec and photo_allowed_by_sched) else None
                         clip_url = rec.trigger_event_clip(label='movimiento') if rec else None
+                        
+                        if snap_name:
+                            logger.info(f"📸 Foto guardada [{cam['name']}]: {snap_name} (Movimiento)")
+                            
                         event_payload = {
                             'camera_id': cid,
                             'camera_name': cam['name'],

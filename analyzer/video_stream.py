@@ -66,11 +66,14 @@ class VideoStream:
             while time.time() < deadline:
                 ret = cap.grab()
                 if ret:
-                    ret2, test_frame = cap.retrieve()
-                    if ret2 and test_frame is not None and getattr(test_frame, 'size', 0) > 0:
-                        h, w = test_frame.shape[:2]
-                        if w > 0 and h > 0:
-                            return cap
+                    w_prop = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h_prop = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if w_prop > 0 and h_prop > 0:
+                        ret2, test_frame = cap.retrieve()
+                        if ret2 and test_frame is not None and getattr(test_frame, 'size', 0) > 0:
+                            h, w = test_frame.shape[:2]
+                            if w > 0 and h > 0:
+                                return cap
                 time.sleep(0.1)
             
             # No entregó frames válidos

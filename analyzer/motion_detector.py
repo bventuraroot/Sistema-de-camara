@@ -57,8 +57,10 @@ class MotionDetector:
             total_motion_area = 0
             motion_boxes = []
             
-            min_area_scaled = self.min_area * (scale * scale)
-            threshold_scaled = self.threshold * (scale * scale)
+            # Normalizar umbral y área mínima en proporción a la resolución del frame (base estándar 1080p)
+            res_factor = (w * h) / (1920.0 * 1080.0)
+            min_area_scaled = max(80, int(self.min_area * res_factor * (scale * scale)))
+            threshold_scaled = max(300, int(self.threshold * res_factor * (scale * scale)))
             
             for contour in contours:
                 area = cv2.contourArea(contour)
