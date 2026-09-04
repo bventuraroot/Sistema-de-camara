@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0d1117">
+    <title>CCTV Móvil en Vivo</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/mobile.css?v={{ static_version }}">
+</head>
+<body>
+    <div class="mobile-app">
+        <!-- Top App Bar -->
+        <header class="mobile-header">
+            <div class="brand">
+                <span class="live-pulse"></span>
+                <span class="brand-title">CCTV Móvil</span>
+            </div>
+            <div class="header-stats">
+                <span id="mobileFpsBadge" class="badge-fps">-- FPS</span>
+                <span id="mobileLatencyBadge" class="badge-latency">-- ms</span>
+            </div>
+            <div class="header-actions">
+                <a href="/" class="btn-desktop-link" title="Ir al panel completo de escritorio">🖥️</a>
+            </div>
+        </header>
+
+        <!-- Camera Switcher Tabs -->
+        <div class="cam-selector-bar">
+            <button class="cam-tab-btn active" data-cam="cam1" id="tabMobileCam1">
+                <span class="cam-dot connected" id="dotMobileCam1"></span>
+                <span class="cam-label">Cam 1 (Tuya)</span>
+            </button>
+            <button class="cam-tab-btn" data-cam="cam2" id="tabMobileCam2">
+                <span class="cam-dot connected" id="dotMobileCam2"></span>
+                <span class="cam-label">Cam 2 (iCam365)</span>
+            </button>
+        </div>
+
+        <!-- Zero-Lag Real-Time Video Player Container -->
+        <div class="video-container" id="videoContainer">
+            <canvas id="liveCanvas" width="640" height="360"></canvas>
+            <img id="nativeStreamImg" src="" alt="Direct Stream" style="display: none; width: 100%; height: 100%; object-fit: cover;">
+            
+            <div class="live-watermark">
+                <span class="red-dot"></span> EN VIVO
+            </div>
+
+            <div class="overlay-alerts">
+                <div class="mobile-alert" id="mobileAlertMotion" style="display: none;">
+                    ⚠️ Movimiento
+                </div>
+                <div class="mobile-alert alert-ai" id="mobileAlertAi" style="display: none;">
+                    🎯 <span id="mobileAlertAiMsg">Persona</span>
+                </div>
+                <div class="mobile-alert alert-tracking" id="mobileAlertTracking" style="display: none;">
+                    🔄 Siguiendo
+                </div>
+            </div>
+
+            <button type="button" class="btn-fullscreen-overlay" id="btnFullscreen" title="Pantalla Completa">
+                ⛶
+            </button>
+        </div>
+
+        <!-- Selector de Modo de Reproducción Móvil -->
+        <div class="player-mode-bar">
+            <button type="button" class="btn-player-mode active" id="btnModeCanvas" title="Latencia mínima de 30ms con decodificación GPU directa">
+                ⚡ Cero Delay (Canvas)
+            </button>
+            <button type="button" class="btn-player-mode" id="btnModeMjpeg" title="Máxima fluidez continua a 25 FPS reales">
+                🌊 25 FPS (Flujo Directo)
+            </button>
+        </div>
+
+        <!-- Quick Status & Info Strip -->
+        <div class="status-strip">
+            <div class="cam-current-info">
+                <strong id="currentCamName">Cámara 1: Tuya PTZ</strong>
+                <span class="cam-resolution" id="currentResolution">640x360 @ Ultra-Baja Latencia</span>
+            </div>
+            <div class="tracking-toggle-wrap">
+                <button type="button" class="btn-pill-toggle active" id="btnToggleTracking">
+                    🎯 Auto-Tracking <span class="toggle-indicator">ON</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Touch PTZ D-Pad Controller -->
+        <div class="controls-card">
+            <div class="dpad-wrapper">
+                <div class="dpad-container">
+                    <button class="dpad-btn dpad-up" data-dir="up" aria-label="Arriba">▲</button>
+                    <button class="dpad-btn dpad-left" data-dir="left" aria-label="Izquierda">◀</button>
+                    <button class="dpad-btn dpad-center" data-dir="center" aria-label="Centro">⌂</button>
+                    <button class="dpad-btn dpad-right" data-dir="right" aria-label="Derecha">▶</button>
+                    <button class="dpad-btn dpad-down" data-dir="down" aria-label="Abajo">▼</button>
+                </div>
+                <div class="dpad-label">Control PTZ Táctil</div>
+            </div>
+
+            <!-- Quick Action Buttons -->
+            <div class="action-grid">
+                <button type="button" class="btn-action" id="btnSnapPhoto">
+                    <span class="action-icon">📸</span>
+                    <span class="action-text">Foto</span>
+                </button>
+                <button type="button" class="btn-action" id="btnCenterHome">
+                    <span class="action-icon">🎯</span>
+                    <span class="action-text">Centro</span>
+                </button>
+                <a href="/recordings" class="btn-action" id="btnRecordingsLink">
+                    <span class="action-icon">📁</span>
+                    <span class="action-text">Videos</span>
+                </a>
+                <button type="button" class="btn-action" id="btnRefreshFeed">
+                    <span class="action-icon">🔄</span>
+                    <span class="action-text">Refrescar</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Toast Notification -->
+        <div id="mobileToast" class="mobile-toast" style="display: none;"></div>
+    </div>
+
+    <script src="/static/mobile.js?v={{ static_version }}"></script>
+</body>
+</html>

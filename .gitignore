@@ -1,0 +1,46 @@
+# ==========================================
+# Git Ignore - Sistema de Cámaras Inteligente
+# ==========================================
+
+# Entorno Virtual Python
+venv/
+env/
+ENV/
+*.venv/
+
+# Byte-compiled / optimizados
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Variables de entorno y credenciales sensibles
+.env
+.env.local
+.env.*.local
+
+# Logs del servidor y servicios
+*.log
+server.log
+
+# Almacenamiento local de grabaciones y capturas
+recordings/
+tuya-data/
+captures/
+
+# Modelos y pesos de IA (descargados automáticamente por Ultralytics YOLOv8)
+*.pt
+
+# Archivos temporales y de depuración
+scratch/
+lo.txt
+test_hd.jpg
+
+# Archivos del Sistema Operativo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

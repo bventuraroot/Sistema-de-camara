@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mediateca y Grabaciones | Sistema de Seguridad IA</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .media-page-container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .media-header-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-soft);
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .media-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .media-title-wrap h1 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text-main);
+            margin: 0;
+        }
+
+        .storage-dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.25rem;
+        }
+
+        .storage-stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            box-shadow: var(--shadow-soft);
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .storage-stat-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .storage-big-value {
+            font-size: 1.85rem;
+            font-weight: 800;
+            color: var(--text-main);
+            font-family: var(--font-mono);
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+
+        .storage-big-value small {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .days-estimate-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #34d399;
+            padding: 0.4rem 0.85rem;
+            border-radius: var(--radius-md);
+            font-weight: 700;
+            font-size: 0.92rem;
+            align-self: flex-start;
+        }
+
+        .media-controls-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .filter-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .filter-tabs {
+            display: inline-flex;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0.25rem;
+            border-radius: var(--radius-md);
+            gap: 0.25rem;
+            flex-wrap: wrap;
+        }
+
+        .filter-tab {
+            padding: 0.45rem 0.9rem;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .filter-tab:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .filter-tab.active {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .bulk-actions-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius-md);
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .bulk-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .bulk-btns-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+            gap: 1.25rem;
+        }
+
+        .media-item-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+            position: relative;
+        }
+
+        .media-item-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(59, 130, 246, 0.4);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        }
+
+        .media-thumb-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: #000;
+            overflow: hidden;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .media-thumb-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.3s ease;
+        }
+
+        .media-item-card:hover .media-thumb-img {
+            transform: scale(1.05);
+        }
+
+        .play-overlay-icon {
+            position: absolute;
+            width: 48px;
+            height: 48px;
+            background: rgba(0, 0, 0, 0.65);
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 1.25rem;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(4px);
+        }
+
+        .media-thumb-wrap:hover .play-overlay-icon {
+            background: var(--primary);
+            border-color: var(--primary);
+            transform: scale(1.1);
+        }
+
+        .media-cam-badge {
+            position: absolute;
+            top: 0.6rem;
+            left: 0.6rem;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #fff;
+            padding: 0.2rem 0.55rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.72rem;
+            font-weight: 700;
+            backdrop-filter: blur(4px);
+        }
+
+        .media-type-badge {
+            position: absolute;
+            top: 0.6rem;
+            right: 0.6rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+
+        .media-type-badge.clip {
+            background: rgba(239, 68, 68, 0.85);
+            color: #fff;
+        }
+
+        .media-type-badge.continuous {
+            background: rgba(59, 130, 246, 0.85);
+            color: #fff;
+        }
+
+        .media-type-badge.snapshot {
+            background: rgba(16, 185, 129, 0.85);
+            color: #fff;
+        }
+
+        /* Posters de video ultraligeros (0 consumo de CPU y 0 decodificadores) */
+        .video-poster-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
+            color: var(--text-muted);
+            user-select: none;
+            transition: all 0.3s ease;
+        }
+
+        .media-item-card:hover .video-poster-placeholder {
+            background: radial-gradient(circle at center, #334155 0%, #0f172a 100%);
+        }
+
+        .poster-icon {
+            font-size: 2.2rem;
+            filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
+        }
+
+        .poster-time {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #cbd5e1;
+            letter-spacing: 0.05em;
+            background: rgba(0,0,0,0.5);
+            padding: 0.15rem 0.55rem;
+            border-radius: var(--radius-sm);
+        }
+
+        .table-poster-box {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1e293b;
+            font-size: 1.2rem;
+        }
+
+        /* Barra de Paginación */
+        .media-pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            padding: 0.75rem 1.25rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .pagination-info {
+            font-size: 0.84rem;
+            color: var(--text-muted);
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .media-card-body {
+            padding: 0.85rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            flex-grow: 1;
+        }
+
+        .media-file-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--text-main);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .media-file-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+        }
+
+        .media-actions-footer {
+            padding: 0.6rem 1rem;
+            background: rgba(0, 0, 0, 0.25);
+            border-top: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+
+        .checkbox-select-item {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .video-player-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+
+        .video-player-dialog {
+            position: relative;
+            z-index: 10;
+            width: 100%;
+            max-width: 960px;
+            background: #0f172a;
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .video-player-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.85rem 1.25rem;
+            background: rgba(15, 23, 42, 0.95);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .video-player-body {
+            position: relative;
+            background: #000;
+            aspect-ratio: 16 / 9;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .video-player-body video,
+        .video-player-body img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Barra de Tiempo de 24 Horas */
+        .timeline-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.95rem;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .timeline-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .timeline-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        .quick-days-pills {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .quick-day-btn {
+            padding: 0.4rem 0.8rem;
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .quick-day-btn:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .quick-day-btn.active {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .timeline-strip-container {
+            position: relative;
+            width: 100%;
+            overflow-x: auto;
+            padding-bottom: 0.35rem;
+        }
+
+        .timeline-strip-container::-webkit-scrollbar {
+            height: 6px;
+        }
+
+        .timeline-strip-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.18);
+            border-radius: 3px;
+        }
+
+        .timeline-hours-strip {
+            display: flex;
+            gap: 0.3rem;
+            min-width: 960px;
+        }
+
+        .hour-tick-btn {
+            flex: 1;
+            min-width: 38px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            padding: 0.5rem 0.15rem;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .hour-tick-btn:hover {
+            background: rgba(59, 130, 246, 0.15);
+            border-color: rgba(59, 130, 246, 0.4);
+        }
+
+        .hour-tick-btn.active {
+            background: linear-gradient(180deg, rgba(59, 130, 246, 0.35) 0%, rgba(37, 99, 235, 0.7) 100%);
+            border-color: var(--primary);
+            box-shadow: 0 0 12px var(--primary-glow);
+        }
+
+        .hour-tick-btn .hour-label {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: var(--text-muted);
+        }
+
+        .hour-tick-btn.active .hour-label {
+            color: #fff;
+        }
+
+        .hour-tick-btn .activity-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: transparent;
+        }
+
+        .hour-tick-btn.has-events .activity-indicator {
+            background: #ef4444;
+            box-shadow: 0 0 6px #ef4444;
+        }
+
+        .hour-tick-btn.has-continuous .activity-indicator {
+            background: #10b981;
+            box-shadow: 0 0 6px #10b981;
+        }
+
+        .hour-tick-btn.has-both .activity-indicator {
+            background: #f59e0b;
+            box-shadow: 0 0 6px #f59e0b;
+        }
+
+        .hour-tick-btn .hour-count-pill {
+            font-size: 0.62rem;
+            font-family: var(--font-mono);
+            padding: 0.05rem 0.3rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-dim);
+        }
+
+        .hour-tick-btn.active .hour-count-pill {
+            background: #fff;
+            color: #000;
+            font-weight: 700;
+        }
+
+        /* Vista Lista Cronológica */
+        .timeline-list-table-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            width: 100%;
+        }
+
+        .timeline-list-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            text-align: left;
+        }
+
+        .timeline-list-table th {
+            background: rgba(15, 23, 42, 0.95);
+            padding: 0.75rem 1rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .timeline-list-table td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            color: var(--text-main);
+            vertical-align: middle;
+        }
+
+        .timeline-list-table tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        /* Estilos del reproductor modal mejorado */
+        .player-time-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            background: rgba(59, 130, 246, 0.15);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: #60a5fa;
+            padding: 0.25rem 0.65rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.78rem;
+            font-family: var(--font-mono);
+            font-weight: 600;
+        }
+
+        .auto-next-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.25rem 0.55rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .auto-next-label:hover {
+            color: var(--text-main);
+        }
+
+        .playlist-counter-badge {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            padding: 0.25rem 0.55rem;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: var(--radius-sm);
+        }
+
+        .view-mode-toggle-group {
+            display: inline-flex;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0.2rem;
+            border-radius: var(--radius-sm);
+            gap: 0.2rem;
+        }
+
+        .view-mode-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            padding: 0.35rem 0.65rem;
+            border-radius: var(--radius-xs);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 600;
+        }
+
+        .view-mode-btn.active {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="media-page-container">
+        <!-- Barra Superior de Navegación -->
+        <header class="media-header-bar">
+            <div class="media-title-wrap">
+                <span class="brand-icon" style="font-size: 1.6rem;">🛡️</span>
+                <div>
+                    <h1>Mediateca & Gestión de Grabaciones</h1>
+                    <small style="color: var(--text-muted);">Videos de eventos, grabaciones 24/7 y fotos en disco externo</small>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <a href="/" class="btn-nav-page" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;">
+                    <span class="icon">🔴</span> Volver a Transmisión en Vivo
+                </a>
+            </div>
+        </header>
+
+        <!-- Tablero de Almacenamiento y Cálculo de Días -->
+        <section class="storage-dashboard-grid">
+            <!-- Tarjeta 1: Espacio en Disco -->
+            <div class="storage-stat-card">
+                <div class="storage-stat-header">
+                    <span>💾 Disco Externo</span>
+                    <span id="storagePercentBadge" class="badge badge-sm">--% Usado</span>
+                </div>
+                <div class="storage-big-value">
+                    <span id="freeGbValue">--</span>
+                    <small>/ <span id="totalGbValue">--</span> GB Libres</small>
+                </div>
+                <div class="progress-bar-bg" style="height: 8px;">
+                    <div class="progress-bar-fill" id="storageProgressBar" style="width: 2%;"></div>
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-muted);" id="storagePathText">
+                    Ruta: /Volumes/ExternalData/Grabaciones_Camara
+                </div>
+            </div>
+
+            <!-- Tarjeta 2: Estimación Inteligente de Días -->
+            <div class="storage-stat-card">
+                <div class="storage-stat-header">
+                    <span>⏳ Autonomía de Grabación</span>
+                    <span id="activeRecModeBadge" class="badge badge-sm">Calculando</span>
+                </div>
+                <div class="days-estimate-badge" id="daysEstimateBadge">
+                    <span class="icon">💡</span> Te quedan aproximadamente <strong id="daysCountText">--</strong> días de grabación
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4;" id="daysEstimateTip">
+                    Calculado en base a la tasa de grabación de tus 2 cámaras (Tuya PTZ e iCam365) antes de requerir rotación automática de disco.
+                </div>
+            </div>
+
+            <!-- Tarjeta 3: Desglose por Tipo de Contenido -->
+            <div class="storage-stat-card">
+                <div class="storage-stat-header">
+                    <span>📊 Desglose de Contenido</span>
+                    <button type="button" class="btn btn-xs btn-outline" id="refreshStorageBtn">🔄 Actualizar</button>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.82rem;">
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>🎬 Clips de Eventos (IA):</span>
+                        <strong id="clipsSizeText">-- MB</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>📼 Grabaciones Continuas 24/7:</span>
+                        <strong id="continuousSizeText">-- MB</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>📸 Capturas de Fotos:</span>
+                        <strong id="snapshotsSizeText">-- MB</strong>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Línea de Tiempo Interactiva: Selector por Día y Hora -->
+        <section class="timeline-section" id="timelineSection">
+            <div class="timeline-header-row">
+                <div class="timeline-title-wrap">
+                    <span>⏰</span>
+                    <span>Explorador Cronológico por Día y Hora</span>
+                    <span id="timelineSelectedDayBadge" class="badge badge-sm" style="background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.4); color: #93c5fd;">Hoy</span>
+                </div>
+
+                <!-- Selector Rápido de Días -->
+                <div class="quick-days-pills" id="quickDaysGroup">
+                    <button type="button" class="quick-day-btn active" data-days-ago="0">📅 Hoy</button>
+                    <button type="button" class="quick-day-btn" data-days-ago="1">📅 Ayer</button>
+                    <button type="button" class="quick-day-btn" data-days-ago="2">📅 Hace 2 días</button>
+                    <button type="button" class="quick-day-btn" data-days-ago="all">🌐 Todo</button>
+                </div>
+
+                <!-- Selector de Vista (Cuadrícula vs Lista) -->
+                <div class="view-mode-toggle-group">
+                    <button type="button" class="view-mode-btn active" id="viewModeGridBtn" title="Vista de Tarjetas con Miniatura">🔲 Cuadrícula</button>
+                    <button type="button" class="view-mode-btn" id="viewModeListBtn" title="Vista de Lista Cronológica Detallada">📋 Lista Cronológica</button>
+                </div>
+            </div>
+
+            <!-- Tira de 24 Horas con Densidad de Actividad -->
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+                <div style="font-size: 0.78rem; color: var(--text-muted);">
+                    Selecciona una hora para ver sus grabaciones o pulsa "Todas las 24h":
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; color: var(--text-dim);">
+                    <span style="display: inline-flex; align-items: center; gap: 0.25rem;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block;"></span> Eventos IA</span>
+                    <span style="display: inline-flex; align-items: center; gap: 0.25rem;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span> 24/7 Continuo</span>
+                    <button type="button" class="btn btn-xs btn-outline active" id="allHoursBtn" style="font-size: 0.75rem; padding: 0.25rem 0.65rem;">🕒 Todas las 24h</button>
+                </div>
+            </div>
+
+            <div class="timeline-strip-container">
+                <div class="timeline-hours-strip" id="timelineHoursStrip">
+                    <!-- Los 24 bloques horarios (00h a 23h) se generan dinámicamente -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Controles de Filtrado y Acciones Masivas -->
+        <section class="media-controls-card">
+            <div class="filter-row">
+                <!-- Filtro por Tipo de Archivo -->
+                <div class="filter-tabs" id="typeFilterGroup">
+                    <button type="button" class="filter-tab active" data-type="all">Todos (<span id="countAll">0</span>)</button>
+                    <button type="button" class="filter-tab" data-type="clip">🎬 Eventos IA (<span id="countClips">0</span>)</button>
+                    <button type="button" class="filter-tab" data-type="continuous">📼 24/7 Continuo (<span id="countCont">0</span>)</button>
+                    <button type="button" class="filter-tab" data-type="snapshot">📸 Fotos (<span id="countSnaps">0</span>)</button>
+                </div>
+
+                <!-- Filtro por Cámara -->
+                <div class="filter-tabs" id="camFilterGroup">
+                    <button type="button" class="filter-tab active" data-cam="all">Todas las Cámaras</button>
+                    <button type="button" class="filter-tab" data-cam="cam1">📹 Cam 1: Tuya</button>
+                    <button type="button" class="filter-tab" data-cam="cam2">📹 Cam 2: iCam365</button>
+                </div>
+
+                <!-- Filtro por Fecha Calendario -->
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <label for="dateFilterInput" style="font-size: 0.82rem; color: var(--text-muted); font-weight: 600;">Calendario:</label>
+                    <input type="date" id="dateFilterInput" style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.4rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.82rem;">
+                    <button type="button" class="btn btn-xs btn-outline" id="clearDateFilterBtn">Limpiar</button>
+                </div>
+            </div>
+
+            <!-- Barra de Acciones Masivas -->
+            <div class="bulk-actions-bar">
+                <div class="bulk-info">
+                    <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+                        <input type="checkbox" id="selectAllCheckbox" class="checkbox-select-item">
+                        <span>Seleccionar Todo</span>
+                    </label>
+                    <span>|</span>
+                    <span>Seleccionados: <strong id="selectedCountText" style="color: var(--primary);">0</strong></span>
+                </div>
+
+                <div class="bulk-btns-group">
+                    <button type="button" class="btn btn-xs btn-outline" id="purge15Btn" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">
+                        🧹 Purgar > 15 Días
+                    </button>
+                    <button type="button" class="btn btn-xs btn-outline" id="purge30Btn" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">
+                        🧹 Purgar > 30 Días
+                    </button>
+                    <button type="button" class="btn btn-xs btn-outline" id="deleteSelectedBtn" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5;" disabled>
+                        🗑️ Eliminar Seleccionados
+                    </button>
+                    <button type="button" class="btn btn-xs btn-outline" id="reloadMediaBtn">
+                        🔄 Recargar Lista
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Cuadrícula de Archivos Multimedia -->
+        <section class="media-grid" id="mediaGrid">
+            <div class="no-events-state" style="grid-column: 1 / -1; padding: 4rem 1rem;">
+                <span class="empty-icon">⏳</span>
+                <p>Cargando archivos multimedia del disco externo...</p>
+            </div>
+        </section>
+
+        <!-- Vista Lista Cronológica (Alternativa a Cuadrícula) -->
+        <section class="timeline-list-table-wrap" id="timelineListView" style="display: none;">
+            <table class="timeline-list-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;"><input type="checkbox" id="selectAllListCheckbox" class="checkbox-select-item"></th>
+                        <th style="width: 100px;">Miniatura</th>
+                        <th>Fecha y Hora Exacta</th>
+                        <th>Cámara</th>
+                        <th>Tipo / Evento</th>
+                        <th>Tamaño</th>
+                        <th style="text-align: right;">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody id="timelineListBody">
+                    <!-- Filas generadas dinámicamente -->
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Barra de Paginación Rápida (Evita sobrecarga del navegador) -->
+        <div class="media-pagination-bar" id="paginationBar" style="display: none;">
+            <div class="pagination-info" id="paginationInfo">Mostrando grabaciones</div>
+            <div class="pagination-controls">
+                <button type="button" class="btn btn-xs btn-outline" id="prevPageBtn">◀ Anterior</button>
+                <span id="pageIndicator" style="font-size: 0.85rem; font-weight: 700; font-family: var(--font-mono);">1 / 1</span>
+                <button type="button" class="btn btn-xs btn-outline" id="nextPageBtn">Siguiente ▶</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Reproductor Multimedia Avanzado -->
+    <div class="video-player-modal" id="mediaPlayerModal" style="display: none;">
+        <div class="modal-backdrop" id="modalBackdrop"></div>
+        <div class="video-player-dialog">
+            <div class="video-player-header">
+                <div>
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <strong id="playerTitle" style="color: #fff; font-size: 0.95rem;">Reproducir Video</strong>
+                        <span class="player-time-badge" id="playerTimeBadge">📅 -- &bull; ⏰ --</span>
+                    </div>
+                    <div id="playerSubtitle" style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.15rem;">--</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <label class="auto-next-label" title="Reproducir automáticamente el siguiente video cronológico al terminar este">
+                        <input type="checkbox" id="autoPlayNextToggle" checked>
+                        <span>Auto-Siguiente 🔁</span>
+                    </label>
+                    <button type="button" class="btn btn-xs btn-outline" id="closePlayerBtn">✕ Cerrar</button>
+                </div>
+            </div>
+            <div class="video-player-body">
+                <video id="playerVideo" controls style="display: none;"></video>
+                <img id="playerImage" src="" alt="Captura" style="display: none;">
+            </div>
+            <div class="video-player-footer">
+                <!-- Navegación de Lista de Reproducción (Playlist) -->
+                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                    <button type="button" class="btn btn-xs btn-outline" id="playerPrevBtn" title="Video anterior en la línea de tiempo (Flecha Arriba)">⏮ Anterior</button>
+                    <span id="playlistCounter" class="playlist-counter-badge">1 / 1</span>
+                    <button type="button" class="btn btn-xs btn-outline" id="playerNextBtn" title="Siguiente video en la línea de tiempo (Flecha Abajo)">Siguiente ⏭</button>
+                </div>
+
+                <!-- Velocidad y Saltos de Tiempo -->
+                <div style="display: flex; align-items: center; gap: 0.4rem;" id="videoSpeedControls">
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">Velocidad:</span>
+                    <button type="button" class="btn btn-xs btn-outline speed-btn" data-speed="0.5">0.5x</button>
+                    <button type="button" class="btn btn-xs btn-outline speed-btn active" data-speed="1">1x</button>
+                    <button type="button" class="btn btn-xs btn-outline speed-btn" data-speed="1.5">1.5x</button>
+                    <button type="button" class="btn btn-xs btn-outline speed-btn" data-speed="2">2x</button>
+                    <button type="button" class="btn btn-xs btn-outline" id="jumpBackBtn">⏪ -10s</button>
+                    <button type="button" class="btn btn-xs btn-outline" id="jumpForwardBtn">⏩ +10s</button>
+                </div>
+
+                <!-- Descarga y Eliminación -->
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <a href="#" id="playerDownloadBtn" download class="btn btn-xs btn-primary">⬇️ Descargar</a>
+                    <button type="button" class="btn btn-xs btn-outline" id="playerDeleteBtn" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5;">🗑️ Eliminar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/recordings.js"></script>
+</body>
+</html>

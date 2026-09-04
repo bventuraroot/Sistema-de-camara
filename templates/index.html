@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cámara IA - Vigilancia Inteligente en Tiempo Real</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_version }}">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Barra de navegación superior -->
+        <header class="top-nav">
+            <div class="brand">
+                <span class="logo-icon">🛡️</span>
+                <div>
+                    <h1>Cámara Inteligente <span class="badge-ai">IA Core</span></h1>
+                    <p class="subtitle">Monitoreo en tiempo real con análisis neuronal y grabación continua</p>
+                </div>
+            </div>
+
+            <div class="header-badges">
+                <div class="status-chip" id="cameraStatus">
+                    <span class="status-pulse"></span>
+                    <span id="statusText">Conectando...</span>
+                </div>
+                <div class="spec-badge" id="resolutionBadge" title="Resolución activa">
+                    <span class="spec-label">RES</span>
+                    <span class="spec-value" id="resText">--</span>
+                </div>
+                <div class="spec-badge" id="fpsBadge" title="Cuadros por segundo del video">
+                    <span class="spec-label">FPS</span>
+                    <span class="spec-value" id="fpsText">--</span>
+                </div>
+                <div class="spec-badge" id="aiFpsBadge" title="Velocidad de inferencia IA">
+                    <span class="spec-label">IA</span>
+                    <span class="spec-value" id="aiFpsText">--</span>
+                    <a href="/recordings" class="btn-nav-page" title="Gestionar y ver videoclips, grabaciones 24/7 y fotos">
+                        <span class="icon">📁</span> Mediateca / Grabaciones
+                    </a>
+                </div>
+                <button class="btn btn-xs btn-outline" id="shutdownBtn" title="Apagar el sistema de cámaras por completo" style="border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 0.35rem 0.75rem;">
+                    <span class="icon">🛑</span> Apagar
+                </button>
+            </div>
+        </header>
+
+        <!-- Banner de acceso en Red Local / WiFi -->
+        <aside class="local-access-banner">
+            <div class="access-info">
+                <span class="access-icon">📱</span>
+                <div>
+                    <strong>Acceso en Red Local (Celulares, Tablets o PCs):</strong>
+                    <span class="access-url" id="localUrlDisplay">http://{{ lan_ip }}:{{ port }}</span>
+                </div>
+            </div>
+            <button class="btn btn-sm btn-outline" id="copyUrlBtn" title="Copiar enlace para el móvil">
+                <span class="icon">📋</span> Copiar Enlace
+            </button>
+        </aside>
+
+        <!-- Contenido principal -->
+        <main class="dashboard-grid" id="dashboardGrid">
+            <!-- Sección de Video -->
+            <section class="video-card">
+                <!-- Barra de Selección de Vista (Mosaico / Full) -->
+                <div class="view-mode-bar">
+                    <div class="view-tabs-group">
+                        <button type="button" class="view-tab-btn active" id="tabMosaic" data-view="mosaic">
+                            <span class="icon">🪟</span> Mosaico Dual
+                        </button>
+                        <button type="button" class="view-tab-btn" id="tabCam1" data-view="cam1">
+                            <span class="icon">📹</span> Cámara 1 (Tuya PTZ)
+                        </button>
+                        <button type="button" class="view-tab-btn" id="tabCam2" data-view="cam2">
+                            <span class="icon">📹</span> Cámara 2 (iCam365)
+                        </button>
+                    </div>
+                    <div class="view-actions-right">
+                        <!-- Badge visible en celulares: enlace directo al nuevo visor móvil /m -->
+                        <a href="/m" class="mobile-mode-hint" style="text-decoration: none; cursor: pointer;" title="Abrir interfaz móvil dedicada ultra-rápida">
+                            📱 Modo Celular Fluido ↗
+                        </a>
+                        <div class="stream-quality-selector" title="Ajusta el consumo de red/subida al ver las cámaras en vivo">
+                            <span class="quality-icon">📶</span>
+                            <select id="streamQualitySelect" class="quality-dropdown" aria-label="Calidad de transmisión">
+                                <option value="mobile">📱 Modo Móvil Fluido (Celulares / Cero Lag)</option>
+                                <option value="efficient" selected>⚡ Red Eficiente (PC / Laptop)</option>
+                                <option value="balanced">📺 HD Equilibrado (720p)</option>
+                                <option value="original">💎 Máxima Calidad (1080p)</option>
+                            </select>
+                        </div>
+                        <div class="active-view-tag" id="activeViewTag">Vista Mosaico Dual</div>
+                        <button type="button" class="btn-toggle-sidebar" id="toggleSidebarBtn" title="Ocultar o mostrar el panel lateral para agrandar la vista de las cámaras">
+                            <span class="icon" id="toggleSidebarIcon">◀</span>
+                            <span id="toggleSidebarText">Ocultar Panel</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Contenedor Mosaico Dual / Vista Individual -->
+                <div class="mosaic-container mode-mosaic" id="mosaicContainer">
+                    <!-- Tarjeta Cámara 1: Tuya -->
+                    <div class="mosaic-camera-box" id="cameraBoxCam1">
+                        <div class="mosaic-camera-header">
+                            <div class="cam-title-info">
+                                <span class="cam-dot connected" id="cam1StatusDot"></span>
+                                <span class="cam-name">Cámara 1: Tuya PTZ</span>
+                                <span class="badge badge-sm" id="cam1ResBadge">1080p HD</span>
+                                <span class="cam-fps" id="cam1FpsBadge">15 fps</span>
+                            </div>
+                            <button type="button" class="btn-expand-cam" id="btnExpandCam1" data-cam="cam1" title="Ver esta cámara en pantalla completa">
+                                ⛶ Full
+                            </button>
+                        </div>
+                        <div class="video-wrapper">
+                            <img id="videoFeedCam1" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 9'%3E%3C/svg%3E" alt="Cámara 1" loading="eager">
+                            <div class="video-overlay" id="overlayCam1">
+                                <div class="alert-banner" id="motionAlertCam1" style="display: none;">
+                                    <span class="alert-icon">⚠️</span>
+                                    <span>Movimiento</span>
+                                </div>
+                                <div class="alert-banner ai-alert" id="aiAlertCam1" style="display: none;">
+                                    <span class="alert-icon">🎯</span>
+                                    <span id="aiAlertMsgCam1">Persona Detectada</span>
+                                </div>
+                                <div class="alert-banner tracking-alert" id="trackingBanner" style="display: none;">
+                                    <span class="alert-icon">🔄</span>
+                                    <span id="trackingBannerMsg">Siguiendo Objetivo</span>
+                                </div>
+                            </div>
+                            <div class="rec-badge" id="recBadgeCam1">
+                                <span class="rec-dot"></span> <span id="recModeTextCam1">REC</span>
+                            </div>
+                            <button type="button" class="feed-reload-btn" id="reloadCam1Btn" style="display: none;">
+                                🔄 Reconectar Cam 1
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Tarjeta Cámara 2: iCam365 -->
+                    <div class="mosaic-camera-box" id="cameraBoxCam2">
+                        <div class="mosaic-camera-header">
+                            <div class="cam-title-info">
+                                <span class="cam-dot connected" id="cam2StatusDot"></span>
+                                <span class="cam-name">Cámara 2: iCam365</span>
+                                <span class="badge badge-sm" id="cam2ResBadge">1080p HD</span>
+                                <span class="cam-fps" id="cam2FpsBadge">25 fps</span>
+                            </div>
+                            <button type="button" class="btn-expand-cam" id="btnExpandCam2" data-cam="cam2" title="Ver esta cámara en pantalla completa">
+                                ⛶ Full
+                            </button>
+                        </div>
+                        <div class="video-wrapper">
+                            <img id="videoFeedCam2" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 9'%3E%3C/svg%3E" alt="Cámara 2" loading="eager">
+                            <div class="video-overlay" id="overlayCam2">
+                                <div class="alert-banner" id="motionAlertCam2" style="display: none;">
+                                    <span class="alert-icon">⚠️</span>
+                                    <span>Movimiento</span>
+                                </div>
+                                <div class="alert-banner ai-alert" id="aiAlertCam2" style="display: none;">
+                                    <span class="alert-icon">🎯</span>
+                                    <span id="aiAlertMsgCam2">Persona Detectada</span>
+                                </div>
+                            </div>
+                            <div class="rec-badge" id="recBadgeCam2">
+                                <span class="rec-dot"></span> <span id="recModeTextCam2">REC</span>
+                            </div>
+                            <button type="button" class="feed-reload-btn" id="reloadCam2Btn" style="display: none;">
+                                🔄 Reconectar Cam 2
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Barra de Controles Rápidos -->
+                <div class="controls-toolbar">
+                    <button id="toggleContinuousBtn" class="btn-control" title="Alternar: Modo Solo Eventos (ahorro de disco y recursos) vs Grabación Continua 24/7">
+                        <span class="ctrl-icon" id="continuousIcon">🎯</span>
+                        <span id="continuousText">Solo Eventos</span>
+                    </button>
+                    <button id="toggleMotionBtn" class="btn-control active" title="Activar/Desactivar detección de movimiento">
+                        <span class="ctrl-icon">👁️</span>
+                        <span>Movimiento</span>
+                    </button>
+                    <button id="toggleObjectsBtn" class="btn-control active" title="Activar/Desactivar análisis de IA YOLOv8">
+                        <span class="ctrl-icon">🧠</span>
+                        <span>IA YOLOv8</span>
+                    </button>
+                    <button id="toggleAiFilterBtn" class="btn-control active" title="Filtro inteligente: solo alertar si la IA detecta personas/vehículos">
+                        <span class="ctrl-icon">🎯</span>
+                        <span>Filtro IA</span>
+                    </button>
+                    <button id="toggleTrackingBtn" class="btn-control active" title="Auto-Tracking: la cámara gira automáticamente para seguir personas/vehículos en alerta">
+                        <span class="ctrl-icon">🔄</span>
+                        <span id="trackingText">Auto-Tracking</span>
+                    </button>
+                    <button id="snapshotBtn" class="btn-control" title="Tomar una foto instantánea en alta resolución">
+                        <span class="ctrl-icon">📸</span>
+                        <span>Captura</span>
+                    </button>
+                    <button id="toggleSoundBtn" class="btn-control" title="Activar/Desactivar pitido de alerta sonora">
+                        <span class="ctrl-icon">🔇</span>
+                        <span>Sonido</span>
+                    </button>
+                </div>
+
+                <!-- Control Manual PTZ (Cruceta de Navegación) -->
+                <div class="ptz-control-bar" id="ptzControlBar">
+                    <div class="ptz-header-bar">
+                        <div class="ptz-title-wrap">
+                            <span class="ptz-icon">🕹️</span>
+                            <span class="ptz-title">Control Manual de Giro (PTZ)</span>
+                        </div>
+                        <div class="ptz-cam-selector" style="display: flex; gap: 0.35rem;">
+                            <button type="button" class="btn btn-xs active" id="ptzSelectCam1" title="Controlar Cámara 1 (Tuya PTZ)">Cámara 1</button>
+                            <button type="button" class="btn btn-xs" id="ptzSelectCam2" title="Controlar Cámara 2 (iCam365)">Cámara 2</button>
+                        </div>
+                        <div class="ptz-state-chip" id="ptzStatusChip">
+                            <span class="ptz-pulse-dot"></span>
+                            <span id="ptzStatusLabel">Auto-Tracking Listo</span>
+                        </div>
+                    </div>
+
+                    <!-- Aviso de contraseña para motor de Cámara 2 (iCam365) -->
+                    <div id="cam2PtzAuthNotice" style="display: none; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 0.5rem 0.8rem; margin: 0 0.8rem 0.6rem; font-size: 0.8rem; color: #fbbf24;">
+                        🔒 <strong>Cámara 2 (iCam365):</strong> Los motores están protegidos por contraseña del fabricante.
+                        <div style="display: flex; gap: 0.4rem; margin-top: 0.4rem; align-items: center; flex-wrap: wrap;">
+                            <input type="password" id="cam2PasswordInput" placeholder="Contraseña de la cámara..." style="background: #1e293b; border: 1px solid #475569; color: #fff; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; flex: 1; min-width: 140px;">
+                            <button type="button" class="btn btn-xs btn-primary" id="saveCam2PasswordBtn">Guardar y Probar</button>
+                        </div>
+                        <span id="cam2AuthFeedback" style="display: block; margin-top: 0.3rem; font-size: 0.75rem;"></span>
+                    </div>
+                    <div class="ptz-pad-wrap">
+                        <div class="ptz-dpad">
+                            <button type="button" class="ptz-btn ptz-up" data-dir="up" title="Mover Arriba (mantener presionado)">▲</button>
+                            <div class="ptz-row">
+                                <button type="button" class="ptz-btn ptz-left" data-dir="left" title="Mover Izquierda (mantener presionado)">◀</button>
+                                <button type="button" class="ptz-btn ptz-center" data-dir="stop" title="Detener Giro">⏹</button>
+                                <button type="button" class="ptz-btn ptz-right" data-dir="right" title="Mover Derecha (mantener presionado)">▶</button>
+                            </div>
+                            <button type="button" class="ptz-btn ptz-down" data-dir="down" title="Mover Abajo (mantener presionado)">▼</button>
+                        </div>
+                        <div class="ptz-hint-box">
+                            <div class="home-preset-bar" style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <button type="button" class="btn btn-xs btn-outline" id="setHomeBtn" title="Guardar la posición actual como Punto Central al que regresará la cámara">
+                                    📍 Fijar Punto Central
+                                </button>
+                                <button type="button" class="btn btn-xs btn-primary" id="goHomeBtn" title="Regresar inmediatamente la cámara al Punto Central guardado">
+                                    🎯 Ir al Punto Central
+                                </button>
+                                <span id="homeCountdownChip" style="font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.5rem; border-radius: 4px; background: rgba(52, 211, 153, 0.15); color: #34d399; display: inline-flex; align-items: center; gap: 0.25rem;">
+                                    ✅ En Punto Central
+                                </span>
+                                <span id="homeActionToast" style="font-size: 0.75rem; color: #34d399; display: none; align-self: center;"></span>
+                            </div>
+
+                            <!-- Selector de Tiempo de Retorno -->
+                            <div class="home-delay-control" style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; background: rgba(15, 23, 42, 0.5); padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.05); flex-wrap: wrap;">
+                                <span style="font-size: 0.75rem; color: #94a3b8;">⏱️ Regresar al centro tras:</span>
+                                <div class="home-delay-pills" style="display: flex; gap: 0.25rem;">
+                                    <button type="button" class="btn-preset home-delay-btn" data-delay="5">5s</button>
+                                    <button type="button" class="btn-preset active home-delay-btn" data-delay="8">8s</button>
+                                    <button type="button" class="btn-preset home-delay-btn" data-delay="15">15s</button>
+                                    <button type="button" class="btn-preset home-delay-btn" data-delay="30">30s</button>
+                                </div>
+                                <span id="homeDelayToast" style="display: none; font-size: 0.72rem; color: #38bdf8;"></span>
+                            </div>
+
+                            <p class="ptz-hint-text" style="margin-bottom: 0;">💡 <strong>Punto Central:</strong> Al mover la cámara o seguir personas, el temporizador iniciará una cuenta regresiva para <strong>regresar automáticamente</strong> a su posición fija.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Barra Lateral con Estadísticas y Configuración -->
+            <aside class="sidebar-cards">
+                <!-- Panel de Almacenamiento y Grabación 24/7 -->
+                <div class="card storage-panel">
+                    <div class="storage-header">
+                        <h3 class="panel-title" style="margin-bottom:0;">💾 Grabación Continua 24/7</h3>
+                        <span class="badge-status-on" id="contRecStatusBadge">ACTIVA</span>
+                    </div>
+                    <div class="storage-meta">
+                        <div class="storage-path-box" title="Ruta en disco externo">
+                            <span class="path-label">📁 Carpeta:</span>
+                            <span class="path-value" id="storagePathDisplay">/Volumes/ExternalData/Grabaciones_Camara</span>
+                        </div>
+                        <div class="storage-space-row">
+                            <span>Espacio libre: <strong id="storageFreeDisplay">-- GB</strong></span>
+                            <span id="storagePercentDisplay">--%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="storageProgressFill" style="width: 2%;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Panel de Configuración Individual por Cámara -->
+                <div class="card per-cam-panel">
+                    <div class="per-cam-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+                        <h3 class="panel-title" style="margin-bottom: 0;">🎛️ Ajustes por Cámara</h3>
+                        <div class="per-cam-pills" style="display: flex; gap: 0.35rem;">
+                            <button type="button" class="btn btn-xs active" id="cfgCam1Tab">Cámara 1</button>
+                            <button type="button" class="btn btn-xs" id="cfgCam2Tab">Cámara 2</button>
+                        </div>
+                    </div>
+
+                    <div class="per-cam-current-badge" id="cfgCurrentCamBadge" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 0.35rem 0.6rem; margin-bottom: 0.6rem; font-size: 0.78rem; color: #38bdf8; display: flex; align-items: center; justify-content: space-between;">
+                        <span>Configurando: <strong id="cfgCamNameText">Cámara 1 (Tuya PTZ)</strong></span>
+                        <span id="cfgCamStatusDot" style="width: 8px; height: 8px; border-radius: 50%; background: #34d399;" title="Estado de la cámara"></span>
+                    </div>
+
+                    <div class="per-cam-switches-list">
+                        <!-- Switch 1: Movimiento -->
+                        <div class="per-cam-switch-row">
+                            <div class="switch-row-text">
+                                <span class="row-title">👁️ Detección de Movimiento</span>
+                                <span class="row-desc">Analizar cambios y dibujar cajas en esta cámara</span>
+                            </div>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="cfgMotionSwitch" checked>
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+
+                        <!-- Switch 2: Grabación por Evento/Movimiento -->
+                        <div class="per-cam-switch-row">
+                            <div class="switch-row-text">
+                                <span class="row-title">🎬 Grabar Clips por Movimiento</span>
+                                <span class="row-desc">Guardar .mp4 al detectar personas o movimiento</span>
+                            </div>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="cfgEventRecSwitch" checked>
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+
+                        <!-- Switch 3: Auto-Tracking -->
+                        <div class="per-cam-switch-row">
+                            <div class="switch-row-text">
+                                <span class="row-title">🔄 Auto-Tracking (Seguimiento)</span>
+                                <span class="row-desc">Girar motores físicos para seguir personas</span>
+                            </div>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="cfgTrackingSwitch" checked>
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+
+                        <!-- Switch 4: Filtro IA -->
+                        <div class="per-cam-switch-row">
+                            <div class="switch-row-text">
+                                <span class="row-title">🎯 Filtro Inteligente IA</span>
+                                <span class="row-desc">Solo personas/vehículos (ignora mascotas)</span>
+                            </div>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="cfgAiFilterSwitch" checked>
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+
+                        <!-- Switch 5: Grabación Continua 24/7 -->
+                        <div class="per-cam-switch-row">
+                            <div class="switch-row-text">
+                                <span class="row-title">📼 Grabación Continua 24/7</span>
+                                <span class="row-desc">Video ininterrumpido en segundo plano</span>
+                            </div>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="cfgContRecSwitch" checked>
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+
+                        <!-- Sensibilidad individual -->
+                        <div class="per-cam-slider-wrap" style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255, 255, 255, 0.07);">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.3rem;">
+                                <span>Sensibilidad de Movimiento:</span>
+                                <strong id="cfgSensValText" style="color: #38bdf8;">4000</strong>
+                            </div>
+                            <input type="range" id="cfgSensSlider" min="500" max="15000" step="250" value="4000" style="width: 100%;">
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem;">
+                            <span id="cfgSaveToast" style="display: none; font-size: 0.75rem; color: #34d399;"></span>
+                            <button type="button" class="btn btn-xs btn-primary" id="saveCfgCamBtn" style="margin-left: auto;">
+                                💾 Guardar Ajustes de esta Cámara
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Horarios Programados de Fotos JPG (Snapshots) -->
+                <div class="card schedule-panel">
+                    <div class="schedule-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <h3 class="panel-title" style="margin-bottom: 0;">⏰ Horario de Fotos JPG</h3>
+                        <label class="switch-toggle" title="Activar/Desactivar límite de horario para fotos">
+                            <input type="checkbox" id="toggleScheduleSwitch">
+                            <span class="slider-round"></span>
+                        </label>
+                    </div>
+
+                    <!-- Estado actual del horario -->
+                    <div class="schedule-status-banner" id="scheduleStatusBanner">
+                        <span class="sched-dot" id="scheduleStatusDot"></span>
+                        <span id="scheduleStatusText">24/7 Fotos Activas</span>
+                    </div>
+
+                    <p style="font-size: 0.72rem; color: #94a3b8; line-height: 1.35; margin-bottom: 0.6rem;">
+                        💡 <em>Los <strong>videoclips de movimiento</strong> se graban <strong>SIEMPRE (24/7)</strong>. Este horario limita únicamente la toma automática de fotos JPG para evitar saturar el disco.</em>
+                    </p>
+
+                    <div class="schedule-body" id="scheduleBody">
+                        <!-- Presets rápidos -->
+                        <div class="schedule-presets">
+                            <span class="preset-label">Rápido:</span>
+                            <button type="button" class="btn-preset" id="presetNightBtn" title="De 22:00 a 06:00">🌙 Noche</button>
+                            <button type="button" class="btn-preset" id="presetWorkBtn" title="De 08:00 a 18:00">🏢 Laboral</button>
+                            <button type="button" class="btn-preset" id="preset24Btn" title="Todo el día">☀️ 24/7</button>
+                        </div>
+
+                        <!-- Selector de horas -->
+                        <div class="schedule-time-row">
+                            <div class="time-field">
+                                <label for="schedStartTime">Desde:</label>
+                                <input type="time" id="schedStartTime" value="22:00">
+                            </div>
+                            <span class="time-separator">➔</span>
+                            <div class="time-field">
+                                <label for="schedEndTime">Hasta:</label>
+                                <input type="time" id="schedEndTime" value="06:00">
+                            </div>
+                        </div>
+
+                        <!-- Selector de días de la semana -->
+                        <div class="schedule-days-wrap">
+                            <label class="days-label">Días activos:</label>
+                            <div class="days-pills">
+                                <button type="button" class="day-pill active" data-day="0" title="Lunes">L</button>
+                                <button type="button" class="day-pill active" data-day="1" title="Martes">M</button>
+                                <button type="button" class="day-pill active" data-day="2" title="Miércoles">X</button>
+                                <button type="button" class="day-pill active" data-day="3" title="Jueves">J</button>
+                                <button type="button" class="day-pill active" data-day="4" title="Viernes">V</button>
+                                <button type="button" class="day-pill active" data-day="5" title="Sábado">S</button>
+                                <button type="button" class="day-pill active" data-day="6" title="Domingo">D</button>
+                            </div>
+                        </div>
+
+                        <!-- Selección de cámaras -->
+                        <div class="schedule-cams-row">
+                            <label class="cams-label">Aplica a:</label>
+                            <div class="cams-checkboxes">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="schedCam1" checked> Cam 1 (Tuya)
+                                </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="schedCam2" checked> Cam 2 (iCam365)
+                                </label>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem;">
+                            <span id="schedSaveToast" style="display: none; font-size: 0.75rem; color: #34d399;"></span>
+                            <button type="button" class="btn btn-xs btn-primary" id="saveScheduleBtn" style="margin-left: auto;">
+                                💾 Guardar Horario
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Métricas -->
+                <div class="card metric-panel">
+                    <h3 class="panel-title">📊 Estadísticas en Vivo</h3>
+                    <div class="stats-counters">
+                        <div class="counter-item">
+                            <span class="counter-num" id="personCount">0</span>
+                            <span class="counter-tag">Personas</span>
+                        </div>
+                        <div class="counter-item">
+                            <span class="counter-num" id="vehicleCount">0</span>
+                            <span class="counter-tag">Vehículos</span>
+                        </div>
+                        <div class="counter-item">
+                            <span class="counter-num" id="motionCount">0</span>
+                            <span class="counter-tag">Movimientos</span>
+                        </div>
+                        <div class="counter-item">
+                            <span class="counter-num" id="alertCount">0</span>
+                            <span class="counter-tag">Alertas</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Ajustes -->
+                <div class="card settings-panel">
+                    <h3 class="panel-title">⚙️ Ajustes de Precisión</h3>
+                    
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <label for="sensitivitySlider">Sensibilidad de Movimiento</label>
+                            <span class="slider-value" id="sensValDisplay">{{ sens_val }}</span>
+                        </div>
+                        <input type="range" id="sensitivitySlider" min="500" max="15000" step="250" value="{{ sens_val }}">
+                        <div class="slider-range-labels">
+                            <span>Muy Sensible</span>
+                            <span>Estándar</span>
+                            <span>Solo Objetos Grandes</span>
+                        </div>
+                    </div>
+
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <label for="confidenceSlider">Certeza Mínima de la IA</label>
+                            <span class="slider-value" id="confValDisplay">{{ conf_val }}%</span>
+                        </div>
+                        <input type="range" id="confidenceSlider" min="25" max="85" step="5" value="{{ conf_val }}">
+                        <div class="slider-range-labels">
+                            <span>25%</span>
+                            <span>45% (Óptimo)</span>
+                            <span>85%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Panel de Eventos y Grabaciones 24/7 -->
+                <div class="card events-panel">
+                    <div class="events-header">
+                        <div class="sidebar-tab-group">
+                            <button class="sidebar-tab-btn active" id="tabEventsBtn">📋 Alertas</button>
+                            <button class="sidebar-tab-btn" id="tabClipsBtn">🎬 Videos de Eventos</button>
+                            <button class="sidebar-tab-btn" id="tabRecordingsBtn">📼 24/7</button>
+                        </div>
+                        <button class="btn btn-xs btn-outline" id="clearEventsBtn" title="Limpiar historial">Limpiar</button>
+                        <button class="btn btn-xs btn-outline" id="refreshRecordingsBtn" style="display: none;" title="Refrescar lista">🔄</button>
+                    </div>
+                    <div class="sidebar-filter-bar" id="sidebarFilterBar" style="display: none; padding: 0.4rem 0.75rem; background: rgba(0,0,0,0.35); border-bottom: 1px solid var(--border-subtle); align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.75rem;">
+                        <div style="display: flex; align-items: center; gap: 0.35rem;">
+                            <label for="sidebarDateSelect" style="color: var(--text-muted); font-weight: 600;">Día:</label>
+                            <select id="sidebarDateSelect" style="background: rgba(15,23,42,0.8); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.72rem;">
+                                <option value="today">📅 Hoy</option>
+                                <option value="yesterday">📅 Ayer</option>
+                                <option value="all">🌐 Todo</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.35rem;">
+                            <label for="sidebarHourSelect" style="color: var(--text-muted); font-weight: 600;">Hora:</label>
+                            <select id="sidebarHourSelect" style="background: rgba(15,23,42,0.8); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.72rem;">
+                                <option value="all">🕒 24 Horas</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="events-scroll-container" id="eventsList">
+                        <div class="no-events-state">
+                            <span class="empty-icon">🛡️</span>
+                            <p>Esperando actividad en la cámara...</p>
+                        </div>
+                    </div>
+                    <div class="events-scroll-container" id="clipsList" style="display: none;">
+                        <div class="no-events-state">
+                            <span class="empty-icon">⏳</span>
+                            <p>Cargando videos de eventos...</p>
+                        </div>
+                    </div>
+                    <div class="events-scroll-container" id="recordingsList" style="display: none;">
+                        <div class="no-events-state">
+                            <span class="empty-icon">⏳</span>
+                            <p>Cargando grabaciones 24/7...</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Modal para previsualizar capturas y videos de eventos -->
+        <div class="snapshot-modal" id="snapshotModal" style="display: none;">
+            <div class="modal-backdrop" id="modalBackdrop"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div class="modal-header-left">
+                        <h4 id="modalTitle">Captura de Evento</h4>
+                        <div class="modal-tab-group" id="modalTabGroup">
+                            <button class="modal-tab-btn active" id="modalTabPhoto">📸 Foto</button>
+                            <button class="modal-tab-btn" id="modalTabVideo" style="display: none;">▶️ Video del Evento</button>
+                        </div>
+                    </div>
+                    <button class="modal-close" id="modalCloseBtn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <img id="modalImage" src="" alt="Captura ampliada">
+                    <video id="modalVideo" controls playsinline style="display: none;"></video>
+                </div>
+                <div class="modal-footer" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+                    <div style="display: flex; align-items: center; gap: 0.4rem;" id="modalNavControls">
+                        <button type="button" class="btn btn-xs btn-outline" id="modalPrevBtn" title="Evento anterior">⏮ Anterior</button>
+                        <span id="modalCounter" style="font-size: 0.75rem; font-family: var(--font-mono); color: var(--text-muted);">1 / 1</span>
+                        <button type="button" class="btn btn-xs btn-outline" id="modalNextBtn" title="Siguiente evento">Siguiente ⏭</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <a id="modalDownloadBtn" href="" download class="btn btn-xs btn-primary">Descargar Foto</a>
+                        <a id="modalDownloadVideoBtn" href="" download class="btn btn-xs btn-outline" style="display: none;">Descargar Video MP4</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="app-footer">
+            <p>Sistema de Vigilancia y Monitoreo Inteligente &bull; Grabación 24/7 en Disco Externo &bull; IA YOLOv8</p>
+        </footer>
+    </div>
+
+    <!-- Audio para alertas sonoras -->
+    <audio id="alertAudio" preload="auto">
+        <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YV4GAACBhYqFbF1fdJivrJBhNjVgodDbqWE4Mm2h2/LDkF89OXGv3/PLl2NDP3is2fPLm25FQnWn1/HNnXZKRnWl1fDNnn5TSHOi0/DNn4FXSW+dz+/NoIdaR2yXyuvNoYpeRmiTx+rNoY5iRWKNw+rOoZFnRFyHvevOo5VqQ1eCuenOo5ltQVB9t+nOo51vP0x5s+nOo6BxPUd1rebPo6NzO0Nwq+PQo6V1ODtto93Po6h3NTNlntPPo6p5MS9emcvPo6t8Li1blsbPo61+LCpUkL7Po7CBKydNj7jPo7KFJCNHi7PPo7OHIR5Ah67Po7aJHBk7gp/Po7mMGxU1fYrPo7uQFxIvd4DPo7yTFw4pcoDPo72VFwglbn3Po76XFQckanrPo7+ZFQQeZ3XPo8CaFAQYY3LPo8GbEwMTX27Po8KdEgELWmrPo8OfEAEJVWbPo8SgDwAEUV7Po8WhDQACSkPPo8alCwAA" type="audio/wav">
+    </audio>
+
+    <script src="{{ url_for('static', filename='app.js') }}?v={{ static_version }}"></script>
+</body>
+</html>

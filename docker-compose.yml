@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # Bridge Tuya a RTSP (WebRTC local a RTSP)
+  tuya-bridge:
+    build:
+      context: ./tuya-rtsp-bridge
+      dockerfile: Dockerfile
+    container_name: tuya-bridge
+    restart: unless-stopped
+    ports:
+      - "8554:8554"
+      - "8787:8787"
+    volumes:
+      - ./tuya-data:/data
+    environment:
+      - TUYA_REGION=${TUYA_REGION:-eu-central}
+      - TUYA_EMAIL=${TUYA_EMAIL:-tu_email@example.com}
+
+  # Servidor de visión artificial y grabación continua
+  camera-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: camera-server
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      - /Volumes/ExternalData/Grabaciones_Camara:/Volumes/ExternalData/Grabaciones_Camara
+      - ./config:/app/config
+    environment:
+      - RTSP_URL=rtsp://tuya-bridge:8554/Cámara_de_nubes/hd
+      - RECORDINGS_DIR=/Volumes/ExternalData/Grabaciones_Camara
+      - CONTINUOUS_RECORDING=true
+      - SEGMENT_MINUTES=10
+      - MAX_RECORDING_DAYS=30
+      - MOTION_THRESHOLD=4000
+      - CONFIDENCE_THRESHOLD=0.45
+      - ALERT_COOLDOWN=5
+      - AI_MOTION_ONLY=true
+      - WEB_PORT=5001
+      - DEBUG=false
+    depends_on:
+      - tuya-bridge

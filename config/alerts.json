@@ -1,0 +1,29 @@
+{
+    "cooldown": 30,
+    "notifications": {
+        "email": {
+            "enabled": false,
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 587,
+            "sender": "tu_email@gmail.com",
+            "recipient": "destinatario@email.com"
+        },
+        "webhook": {
+            "enabled": false,
+            "url": "https://tu-webhook.com/alertas"
+        }
+    },
+    "event_types": {
+        "motion": {
+            "enabled": true,
+            "priority": "high",
+            "cooldown": 30
+        },
+        "object": {
+            "enabled": true,
+            "priority": "high",
+            "cooldown": 10,
+            "classes": ["person", "car", "truck", "motorcycle"]
+        }
+    }
+}

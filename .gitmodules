@@ -1,0 +1,3 @@
+[submodule "tuya-rtsp-bridge"]
+	path = tuya-rtsp-bridge
+	url = https://github.com/bventuraroot/tuya-rtsp-bridge.git
