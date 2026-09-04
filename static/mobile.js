@@ -49,7 +49,7 @@ async function fetchNextFrame() {
     isFetching = true;
     const reqStart = performance.now();
     const abortCtrl = new AbortController();
-    const timeoutId = setTimeout(() => abortCtrl.abort(), 160);
+    const timeoutId = setTimeout(() => abortCtrl.abort(), 600);
 
     try {
         const response = await fetch(`/api/camera/${currentCam}/live_frame?quality=mobile&t=${Date.now()}`, {

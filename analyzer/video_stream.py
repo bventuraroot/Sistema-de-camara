@@ -9,17 +9,17 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # Configuración robusta para decodificación RTSP sobre TCP y soporte H.264/H.265
-# stimeout: timeout de socket en microsegundos (3s) para evitar bloqueos indefinidos
 # timeout: timeout de conexión/lectura en microsegundos (5s)
+# fflags=nobuffer y flags=low_delay eliminan la latencia de cola y desincronización de POC/slices
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|"
-    "stimeout;3000000|"
     "timeout;5000000|"
-    "reorder_queue_size;100|"
+    "fflags;nobuffer|"
+    "flags;low_delay|"
     "analyzeduration;1000000|"
-    "probesize;1000000|"
-    "max_delay;500000"
+    "probesize;1000000"
 )
+
 
 class VideoStream:
     def __init__(self, rtsp_url, fallback_url=None):
@@ -30,6 +30,8 @@ class VideoStream:
         self.frame = None
         self.connected = False
         self.lock = threading.Lock()
+        self._cap_lock = threading.Lock()
+        self._worker_thread = None
         self.cap = None
         self.width = 1920
         self.height = 1080
@@ -142,38 +144,74 @@ class VideoStream:
                         
                         with self.lock:
                             self.connected = False
+                            self.fps = 0.0
                         time.sleep(2)
                         continue
                     
-                    # Conexión exitosa
-                    self.cap = cap
+                    # Conexión exitosa protegida por cerrojo
+                    with self._cap_lock:
+                        self.cap = cap
                     self._consecutive_connect_failures = 0
                     logger.info(
                         f"Conexión RTSP establecida exitosamente" +
                         (" [SD/Fallback]" if self.using_fallback else " [HD/Primaria]") + "."
                     )
-                    self.connected = True
+                    with self.lock:
+                        self.connected = True
                     self.last_frame_time = time.time()
                     
-                    while self.running and self.connected and self.cap:
-                        # Grab y retrieve para vaciar cualquier buffer interno y siempre tener el último frame
-                        ret = self.cap.grab()
+                    consecutive_identical_frames = 0
+                    last_frame_sample = None
+                    
+                    while self.running and self.connected:
+                        # Grab bajo cerrojo seguro
+                        with self._cap_lock:
+                            if not self.cap or not self.running:
+                                break
+                            ret = self.cap.grab()
+                        
                         if not ret:
                             if time.time() - self.last_frame_time > 6.0:
-                                logger.warning("Pérdida de señal RTSP (timeout de 6s), reconectando...")
+                                logger.warning(f"Pérdida de señal RTSP (timeout de 6s en grab) para {current_url}, reconectando...")
                                 break
                             time.sleep(0.02)
                             continue
                         
-                        ret, frame = self.cap.retrieve()
+                        # Retrieve bajo cerrojo seguro
+                        with self._cap_lock:
+                            if not self.cap or not self.running:
+                                break
+                            ret, frame = self.cap.retrieve()
+                        
                         if not ret or frame is None or getattr(frame, 'size', 0) == 0:
                             if time.time() - self.last_frame_time > 6.0:
-                                logger.warning("Fallo al recuperar frame RTSP (timeout de 6s), reconectando...")
+                                logger.warning(f"Fallo al recuperar frame RTSP (timeout de 6s en retrieve) para {current_url}, reconectando...")
                                 break
                             time.sleep(0.02)
                             continue
                         
                         now = time.time()
+                        h, w = frame.shape[:2]
+                        
+                        # Detector Anti-Freeze / Stream Zombi:
+                        # En cámaras reales el ruido térmico del sensor y el segundero cambian píxeles continuamente.
+                        # Si 40 fotogramas consecutivos (~2.5 a 3.5s) son idénticos, el decodificador está congelado.
+                        if h > 0 and w > 0:
+                            frame_sample = frame[::max(1, h // 8), ::max(1, w // 8), 0].tobytes()
+                            if last_frame_sample is not None and frame_sample == last_frame_sample:
+                                consecutive_identical_frames += 1
+                                if consecutive_identical_frames >= 40:
+                                    logger.warning(
+                                        f"⚠️ [Anti-Freeze] Stream congelado detectado ({consecutive_identical_frames} cuadros idénticos consecutivos). "
+                                        f"Forzando reconexión limpia para {current_url}..."
+                                    )
+                                    if '8554' in str(current_url):
+                                        self._check_and_heal_tuya_bridge()
+                                    break
+                            else:
+                                consecutive_identical_frames = 0
+                                last_frame_sample = frame_sample
+                        
                         self.last_frame_time = now
                         self.frame_count += 1
                         
@@ -184,7 +222,6 @@ class VideoStream:
                             if duration > 0:
                                 self.fps = round((len(self._fps_timestamps) - 1) / duration, 1)
                         
-                        h, w = frame.shape[:2]
                         if h > 0 and w > 0:
                             with self.lock:
                                 self.width = w
@@ -202,14 +239,14 @@ class VideoStream:
                             self._consecutive_connect_failures = 0
                             break
                         
-                        # Sondeo periódico: si estamos en fallback, intentar volver a primaria
+                        # Sondeo periódico: si estamos en fallback y la primaria es distinta, intentar volver a primaria
                         if (self.using_fallback and
                                 self.fallback_url and
+                                self.primary_url != self.fallback_url and
                                 now - self._last_primary_probe > self._primary_probe_interval):
                             self._last_primary_probe = now
                             self._probe_primary_in_background()
-                        
-                        time.sleep(0.005)
+
                         
                 except Exception as e:
                     logger.error(f"Error en stream_worker: {e}")
@@ -217,12 +254,14 @@ class VideoStream:
                 finally:
                     with self.lock:
                         self.connected = False
-                    if self.cap:
-                        try:
-                            self.cap.release()
-                        except Exception:
-                            pass
-                        self.cap = None
+                        self.fps = 0.0
+                    with self._cap_lock:
+                        if self.cap:
+                            try:
+                                self.cap.release()
+                            except Exception:
+                                pass
+                            self.cap = None
                     
                     # Si se desconectó mientras usamos primaria, intentar fallback
                     if (self.fallback_url and
@@ -244,11 +283,13 @@ class VideoStream:
                     
                     time.sleep(1.5)
         
-        thread = threading.Thread(target=stream_worker, daemon=True)
-        thread.start()
+        self._worker_thread = threading.Thread(target=stream_worker, daemon=True, name="video_stream_worker")
+        self._worker_thread.start()
     
     def _probe_primary_in_background(self):
         """Sondea la URL primaria en un hilo separado sin interrumpir el stream actual."""
+        if not self.fallback_url or self.primary_url == self.fallback_url:
+            return
         if self._probe_in_progress:
             return
         self._probe_in_progress = True
@@ -299,19 +340,29 @@ class VideoStream:
             return {'width': self.width, 'height': self.height}
     
     def get_fps(self):
-        """Retorna los FPS calculados del stream."""
-        return self.fps
+        """Retorna los FPS calculados del stream, reseteando a 0 si la señal se pierde."""
+        with self.lock:
+            if not self.connected or (time.time() - self.last_frame_time > 4.0):
+                return 0.0
+            return self.fps
     
     def is_using_fallback(self):
         """Retorna True si se está usando la URL de respaldo (SD)."""
         return self.using_fallback
     
     def stop(self):
+        """Detiene el hilo worker y libera el objeto de captura de forma segura sin colisiones C++."""
         self.running = False
-        self.connected = False
-        if self.cap:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
+        with self.lock:
+            self.connected = False
+            self.fps = 0.0
+        # Esperar a que el worker finalice su bucle y libere self.cap limpiamente
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
+        with self._cap_lock:
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None

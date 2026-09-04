@@ -555,20 +555,19 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
     stream = cam['stream']
     motion_det = cam['motion']
     
-    # Configuración de resolución y compresión optimizada para ambas cámaras (1080p nativo)
-    # Evita saturar la red local con 50+ Mbps de MJPEG y satura cero la CPU
+    # Configuración de resolución y compresión optimizada
     if quality_mode == 'mobile':
-        target_size = (640, 360)
-        jpeg_q = 55  # Compresión ultra-ágil para decodificación instantánea en GPUs móviles
+        target_size = (854, 480)
+        jpeg_q = 75
     elif quality_mode == 'balanced':
-        target_size = (1280, 720)
-        jpeg_q = 68
+        target_size = (1600, 900)
+        jpeg_q = 85
     elif quality_mode == 'original':
         target_size = None
-        jpeg_q = 75
+        jpeg_q = 88
     else:  # 'efficient' (predeterminado para PC, laptop y red local)
-        target_size = (960, 540)
-        jpeg_q = 65
+        target_size = (1280, 720)
+        jpeg_q = 80
     
     last_frame_id = -1
     
@@ -610,9 +609,12 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
                 if object_detector and object_detector.is_active() and dets:
                     display_frame = object_detector.draw_detections(display_frame, dets)
                 
-                # Reducción inteligente rápida (INTER_LINEAR: 0.1ms vs 1.0ms de INTER_AREA)
+                # Reducción inteligente: SOLO reducir si el fotograma nativo excede target_size.
+                # NUNCA escalar hacia arriba para evitar distorsión, borrosidad y pixelado ("se ve feo").
                 if target_size:
-                    display_frame = cv2.resize(display_frame, target_size, interpolation=cv2.INTER_LINEAR)
+                    cur_h, cur_w = display_frame.shape[:2]
+                    if cur_w > target_size[0] or cur_h > target_size[1]:
+                        display_frame = cv2.resize(display_frame, target_size, interpolation=cv2.INTER_AREA)
                 
                 ret, buffer = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_q])
                 if not ret:
@@ -693,11 +695,13 @@ def camera_live_frame(camera_id):
             if object_detector and object_detector.is_active() and dets:
                 display_frame = object_detector.draw_detections(display_frame, dets)
 
-            target_sz = (640, 360) if quality == 'mobile' else ((960, 540) if quality == 'efficient' else None)
+            target_sz = (854, 480) if quality == 'mobile' else ((1280, 720) if quality == 'efficient' else None)
             if target_sz:
-                display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_LINEAR)
+                cur_h, cur_w = display_frame.shape[:2]
+                if cur_w > target_sz[0] or cur_h > target_sz[1]:
+                    display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_AREA)
 
-            q_val = 50 if quality == 'mobile' else 65
+            q_val = 75 if quality == 'mobile' else (80 if quality == 'efficient' else 85)
             ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, q_val, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
             if not ret:
                 return ('', 500)
@@ -1112,22 +1116,21 @@ def restart_camera_route(cid):
     logger.info(f"Solicitud de reinicio manual para {cid} ({cam['name']})")
     
     # Si es cam1 (Tuya) o usa el bridge en el puerto 8554, notificar también al bridge Tuya
-    if cid == 'cam1' or '8554' in cam.get('rtsp_url', ''):
-        def restart_bridge():
-            try:
-                import urllib.request
-                req = urllib.request.Request("http://127.0.0.1:8787/api/restart/rtsp", data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
-                urllib.request.urlopen(req, timeout=4)
-            except Exception as e:
-                logger.warning(f"No se pudo contactar tuya-rtsp-bridge (:8787): {e}")
-        threading.Thread(target=restart_bridge, daemon=True).start()
+    if cid == 'cam1' or '8554' in str(cam.get('rtsp_url', '')):
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://127.0.0.1:8787/api/restart/rtsp", data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
+            urllib.request.urlopen(req, timeout=4)
+            time.sleep(1.0)
+        except Exception as e:
+            logger.warning(f"No se pudo contactar tuya-rtsp-bridge (:8787): {e}")
 
     stream = cam.get('stream')
     if stream:
         try:
             stream.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error al detener stream {cid}: {e}")
     
     time.sleep(0.5)
     cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam.get('fallback_url'))
@@ -1227,18 +1230,32 @@ def take_snapshot(camera_id):
     stream = cam['stream']
     rec = cam['recorder']
     
-    if stream and stream.is_connected() and rec:
+    frame = None
+    if stream:
         frame = stream.read()
-        if frame is not None:
+    if frame is None:
+        with cam['lock']:
+            if cam.get('frame') is not None:
+                frame = cam['frame'].copy()
+    
+    if frame is not None:
+        filename = None
+        if rec:
             filename = rec.save_snapshot(frame, prefix=f"manual_{cid}")
-            if filename:
-                return jsonify({
-                    'success': True,
-                    'camera_id': cid,
-                    'camera_name': cam['name'],
-                    'filename': filename,
-                    'url': f"/snapshots/{filename}"
-                })
+        if not filename:
+            snap_dir = get_storage_dir() / 'snapshots'
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+            filename = f"manual_{cid}_{timestamp}.jpg"
+            cv2.imwrite(str(snap_dir / filename), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        
+        return jsonify({
+            'success': True,
+            'camera_id': cid,
+            'camera_name': cam['name'],
+            'filename': filename,
+            'url': f"/snapshots/{filename}"
+        })
     return jsonify({'error': 'No se pudo capturar snapshot'}), 500
 
 @app.route('/api/storage')

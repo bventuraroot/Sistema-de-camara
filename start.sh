@@ -17,6 +17,7 @@ if command -v docker &> /dev/null; then
         echo "✅ Bridge Tuya RTSP activo en Docker (:8554, :8787)"
         # Refrescar motor RTSP para asegurar que no haya sesiones huérfanas
         curl -s -m 2 -X POST http://127.0.0.1:8787/api/restart/rtsp > /dev/null 2>&1 || true
+        sleep 2
     fi
 fi
 
