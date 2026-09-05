@@ -2106,6 +2106,462 @@ function initSystemCapabilities() {
     loadCapabilities(false);
 }
 
+// ----------------- MODAL ANALIZADOR DE RED Y DETECTOR DE CÁMARAS IP -----------------
+function initNetworkScannerModal() {
+    const btnOpenScanner = document.getElementById('btnOpenScanner');
+    const scannerModal = document.getElementById('scannerModal');
+    const scannerCloseBtn = document.getElementById('scannerCloseBtn');
+    const scannerCloseFooterBtn = document.getElementById('scannerCloseFooterBtn');
+    const scannerBackdrop = document.getElementById('scannerBackdrop');
+    
+    const scanSubnetInput = document.getElementById('scanSubnetInput');
+    const startScanBtn = document.getElementById('startScanBtn');
+    const startScanIcon = document.getElementById('startScanIcon');
+    const startScanText = document.getElementById('startScanText');
+    const scanStatusMsg = document.getElementById('scanStatusMsg');
+    const scanCounterText = document.getElementById('scanCounterText');
+    const scanFoundCount = document.getElementById('scanFoundCount');
+    const scannedDevicesList = document.getElementById('scannedDevicesList');
+
+    const manualRtspInput = document.getElementById('manualRtspInput');
+    const testManualRtspBtn = document.getElementById('testManualRtspBtn');
+    const manualTestResult = document.getElementById('manualTestResult');
+    const assignManualCam1Btn = document.getElementById('assignManualCam1Btn');
+    const assignManualCam2Btn = document.getElementById('assignManualCam2Btn');
+
+    let presetsCache = [];
+    let isScanning = false;
+
+    function openModal() {
+        if (scannerModal) {
+            scannerModal.style.display = 'flex';
+            if (!scanSubnetInput.value.trim()) {
+                // Inferir subred por la IP del servidor si está disponible
+                const localUrl = document.getElementById('localUrlDisplay')?.textContent || '';
+                const m = localUrl.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.)/);
+                scanSubnetInput.value = m ? m[1] : '192.168.1.';
+            }
+        }
+    }
+
+    function closeModal() {
+        if (scannerModal) scannerModal.style.display = 'none';
+    }
+
+    if (btnOpenScanner) btnOpenScanner.addEventListener('click', openModal);
+    if (scannerCloseBtn) scannerCloseBtn.addEventListener('click', closeModal);
+    if (scannerCloseFooterBtn) scannerCloseFooterBtn.addEventListener('click', closeModal);
+    if (scannerBackdrop) scannerBackdrop.addEventListener('click', closeModal);
+
+    // Cargar plantillas de fabricantes
+    async function loadPresets() {
+        try {
+            const res = await fetch('/api/scanner/presets');
+            if (res.ok) {
+                presetsCache = await res.json();
+            }
+        } catch (e) {
+            console.error('Error cargando presets de cámaras:', e);
+        }
+    }
+    loadPresets();
+
+    // Escanear red
+    async function runNetworkScan() {
+        if (isScanning) return;
+        isScanning = true;
+
+        const subnet = scanSubnetInput ? scanSubnetInput.value.trim() : '';
+        if (startScanBtn) startScanBtn.disabled = true;
+        if (startScanIcon) {
+            startScanIcon.textContent = '📡';
+            startScanIcon.classList.add('radar-spinning');
+        }
+        if (startScanText) startScanText.textContent = 'Escaneando Red...';
+        if (scanStatusMsg) scanStatusMsg.textContent = 'Enviando sondas ONVIF UDP y escaneando puertos RTSP (554, 8899, 80, 5000)...';
+        if (scanFoundCount) scanFoundCount.textContent = '0';
+
+        let timerSeconds = 0;
+        const timerInterval = setInterval(() => {
+            timerSeconds += 0.2;
+            if (scanCounterText) scanCounterText.textContent = `${timerSeconds.toFixed(1)}s transcurridos`;
+        }, 200);
+
+        try {
+            const res = await fetch('/api/scanner/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ subnet: subnet })
+            });
+
+            clearInterval(timerInterval);
+            const data = await res.json();
+
+            if (data.subnet_scanned && scanSubnetInput) {
+                scanSubnetInput.value = data.subnet_scanned;
+            }
+
+            renderDiscoveredDevices(data.devices || []);
+            if (scanStatusMsg) {
+                scanStatusMsg.textContent = `✅ Escaneo completado en ${data.elapsed_seconds || 0}s. ${data.count || 0} dispositivo(s) encontrado(s).`;
+            }
+            if (scanFoundCount) scanFoundCount.textContent = `${data.count || 0}`;
+        } catch (e) {
+            clearInterval(timerInterval);
+            console.error('Error en escaneo de red:', e);
+            if (scanStatusMsg) scanStatusMsg.textContent = `❌ Error en el escaneo: ${e}`;
+        } finally {
+            isScanning = false;
+            if (startScanBtn) startScanBtn.disabled = false;
+            if (startScanIcon) {
+                startScanIcon.textContent = '⚡';
+                startScanIcon.classList.remove('radar-spinning');
+            }
+            if (startScanText) startScanText.textContent = 'Escanear Red Ahora';
+        }
+    }
+
+    if (startScanBtn) {
+        startScanBtn.addEventListener('click', runNetworkScan);
+    }
+
+    // Renderizar tarjetas de dispositivos encontrados
+    function renderDiscoveredDevices(devices) {
+        if (!scannedDevicesList) return;
+        scannedDevicesList.innerHTML = '';
+
+        if (!devices || devices.length === 0) {
+            scannedDevicesList.innerHTML = `
+                <div class="empty-scan-state" style="text-align: center; padding: 1.8rem 1rem; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 8px;">
+                    <span style="font-size: 2rem; display: block; margin-bottom: 0.4rem;">⚠️</span>
+                    <p style="color: #cbd5e1; font-size: 0.85rem; margin: 0; font-weight: 500;">No se detectaron cámaras en esta subred.</p>
+                    <p style="color: #94a3b8; font-size: 0.74rem; margin-top: 0.3rem;">
+                        Verifica que la cámara esté encendida, con cable/Wi-Fi en la misma red y prueba cambiar la subred (ej: <strong>192.168.0.</strong> o <strong>10.0.0.</strong>).
+                    </p>
+                </div>
+            `;
+            return;
+        }
+
+        devices.forEach((dev, idx) => {
+            const card = document.createElement('div');
+            card.className = 'scanned-device-card';
+            card.id = `scannedCard_${idx}`;
+
+            const openPortsStr = (dev.open_ports || []).map(p => `:${p}`).join(', ') || '554';
+            const initialRtsp = dev.suggested_rtsp || `rtsp://admin:admin@${dev.ip}:554/live/ch0`;
+
+            card.innerHTML = `
+                <div class="device-header">
+                    <div class="device-title-wrap">
+                        <div class="device-icon-box">📹</div>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <span class="device-ip-badge">${dev.ip}</span>
+                                <strong style="color: #f8fafc; font-size: 0.88rem;">${dev.name || 'Cámara de Seguridad'}</strong>
+                            </div>
+                            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 0.15rem;">
+                                MAC: <span style="font-family: var(--font-mono); color: #cbd5e1;">${dev.mac || 'N/A'}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="device-meta-pills">
+                        <span class="device-pill pill-hardware">🏷️ ${dev.hardware || 'Cámara IP'}</span>
+                        <span class="device-pill">🔌 Puertos ${openPortsStr}</span>
+                        <span class="device-pill pill-online">🟢 Online (${dev.latency_ms || 10}ms)</span>
+                    </div>
+                </div>
+
+                <div class="device-url-box">
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; color: #cbd5e1;">
+                        <span><strong>URL RTSP para conexión:</strong></span>
+                        <div style="display: flex; gap: 0.4rem; align-items: center;">
+                            <span style="font-size: 0.7rem; color: #94a3b8;">Plantilla:</span>
+                            <select class="device-preset-select" data-ip="${dev.ip}" style="background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; font-size: 0.72rem; padding: 0.15rem 0.4rem; border-radius: 4px;">
+                                <option value="custom">✏️ Personalizada</option>
+                                <option value="icam365" selected>iCam365 / EyePlus (admin:admin)</option>
+                                <option value="tuya_bridge">Tuya / Smart Life (Bridge Local :8554)</option>
+                                <option value="xm_icsee">Xiongmai / iCSee (admin:vacio)</option>
+                                <option value="yoosee">Yoosee / CooCam (admin:123456)</option>
+                                <option value="camhi">CamHi / HiSilicon (/11)</option>
+                                <option value="dahua">Dahua / Imou</option>
+                                <option value="hikvision">Hikvision / Hilook</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <input type="text" class="device-rtsp-input" value="${initialRtsp}" placeholder="rtsp://usuario:clave@${dev.ip}:554/live/ch0">
+
+                    <div class="device-actions-row">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <button type="button" class="btn btn-xs btn-outline btn-test-stream" data-idx="${idx}">
+                                🧪 Probar Video
+                            </button>
+                            <span class="device-test-feedback" id="testFeedback_${idx}" style="display: none;"></span>
+                        </div>
+
+                        <div style="display: flex; gap: 0.4rem;">
+                            <button type="button" class="btn btn-xs btn-outline btn-assign-cam" data-cam="cam1" data-idx="${idx}" title="Asignar esta IP a la Cámara 1">
+                                📌 Aplicar a Cámara 1
+                            </button>
+                            <button type="button" class="btn btn-xs btn-primary btn-assign-cam" data-cam="cam2" data-idx="${idx}" title="Asignar esta IP a la Cámara 2">
+                                📌 Aplicar a Cámara 2
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            scannedDevicesList.appendChild(card);
+
+            // Handler para selector de plantillas
+            const presetSelect = card.querySelector('.device-preset-select');
+            const rtspInput = card.querySelector('.device-rtsp-input');
+
+            presetSelect.addEventListener('change', () => {
+                const pVal = presetSelect.value;
+                if (pVal === 'icam365') {
+                    rtspInput.value = `rtsp://admin:admin@${dev.ip}:554/live/ch0`;
+                } else if (pVal === 'tuya_bridge') {
+                    rtspInput.value = `rtsp://localhost:8554/Cámara_de_nubes/hd`;
+                } else if (pVal === 'xm_icsee') {
+                    rtspInput.value = `rtsp://admin:@${dev.ip}:554/stream0`;
+                } else if (pVal === 'yoosee') {
+                    rtspInput.value = `rtsp://admin:123456@${dev.ip}:554/onvif1`;
+                } else if (pVal === 'camhi') {
+                    rtspInput.value = `rtsp://admin:admin@${dev.ip}:554/11`;
+                } else if (pVal === 'dahua') {
+                    rtspInput.value = `rtsp://admin:admin123@${dev.ip}:554/cam/realmonitor?channel=1&subtype=0`;
+                } else if (pVal === 'hikvision') {
+                    rtspInput.value = `rtsp://admin:12345@${dev.ip}:554/Streaming/Channels/101`;
+                }
+            });
+
+            // Handler para botón de probar stream
+            const testBtn = card.querySelector('.btn-test-stream');
+            const feedbackSpan = card.querySelector(`#testFeedback_${idx}`);
+
+            testBtn.addEventListener('click', async () => {
+                const rtspUrl = rtspInput.value.trim();
+                testBtn.disabled = true;
+                testBtn.textContent = '⏳ Probando...';
+                feedbackSpan.style.display = 'none';
+
+                try {
+                    const res = await fetch('/api/scanner/test_stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rtsp_url: rtspUrl })
+                    });
+                    const result = await res.json();
+                    feedbackSpan.style.display = 'inline-block';
+                    if (result.success) {
+                        feedbackSpan.className = 'device-test-feedback test-success';
+                        feedbackSpan.textContent = `✅ Video OK: ${result.resolution} (${result.latency_ms || 0}ms)`;
+                    } else {
+                        feedbackSpan.className = 'device-test-feedback test-error';
+                        feedbackSpan.textContent = `❌ ${result.error || 'Error de conexión'}`;
+                    }
+                } catch (e) {
+                    feedbackSpan.style.display = 'inline-block';
+                    feedbackSpan.className = 'device-test-feedback test-error';
+                    feedbackSpan.textContent = `❌ Error: ${e}`;
+                } finally {
+                    testBtn.disabled = false;
+                    testBtn.textContent = '🧪 Probar Video';
+                }
+            });
+
+            // Handlers para asignar a Cámara 1 o Cámara 2
+            const assignBtns = card.querySelectorAll('.btn-assign-cam');
+            assignBtns.forEach(abtn => {
+                abtn.addEventListener('click', async () => {
+                    const targetCam = abtn.dataset.cam;
+                    const rtspUrl = rtspInput.value.trim();
+                    const camName = dev.name || `Cámara (${dev.ip})`;
+
+                    abtn.disabled = true;
+                    abtn.textContent = 'Guardando...';
+
+                    try {
+                        const res = await fetch('/api/scanner/apply', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                camera_id: targetCam,
+                                rtsp_url: rtspUrl,
+                                name: `${targetCam === 'cam1' ? 'Cámara 1' : 'Cámara 2'} (${dev.ip})`
+                            })
+                        });
+
+                        let result = {};
+                        try {
+                            result = await res.json();
+                        } catch (parseErr) {
+                            throw new Error(`El servidor respondió con código ${res.status}. ${res.status === 404 ? 'Reinicia el servidor para cargar las nuevas rutas.' : ''}`);
+                        }
+
+                        if (result.success) {
+                            alert(`✅ ¡Cámara ${targetCam.toUpperCase()} reconectada exitosamente a ${dev.ip}!`);
+                            closeModal();
+                            refreshActiveFeeds();
+                            pollStatus();
+                        } else {
+                            alert(`Error: ${result.error || 'No se pudo aplicar la IP'}`);
+                        }
+                    } catch (e) {
+                        alert(`❌ ${e.message || e}`);
+                    } finally {
+                        abtn.disabled = false;
+                        abtn.textContent = targetCam === 'cam1' ? '📌 Aplicar a Cámara 1' : '📌 Aplicar a Cámara 2';
+                    }
+                });
+            });
+        });
+    }
+
+    // Diagnóstico Manual
+    if (testManualRtspBtn && manualRtspInput && manualTestResult) {
+        testManualRtspBtn.addEventListener('click', async () => {
+            const rtspUrl = manualRtspInput.value.trim();
+            if (!rtspUrl) {
+                alert('Ingresa una URL RTSP primero');
+                return;
+            }
+            testManualRtspBtn.disabled = true;
+            testManualRtspBtn.textContent = '⏳ Probando...';
+            manualTestResult.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/scanner/test_stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rtsp_url: rtspUrl })
+                });
+                let result = {};
+                try {
+                    result = await res.json();
+                } catch (pe) {
+                    throw new Error(`Código ${res.status}`);
+                }
+                manualTestResult.style.display = 'block';
+                if (result.success) {
+                    manualTestResult.className = 'device-test-feedback test-success';
+                    manualTestResult.textContent = `✅ Video OK: ${result.resolution} (${result.latency_ms || 0}ms)`;
+                } else {
+                    manualTestResult.className = 'device-test-feedback test-error';
+                    manualTestResult.textContent = `❌ ${result.error || 'Fallo de conexión'}`;
+                }
+            } catch (e) {
+                manualTestResult.style.display = 'block';
+                manualTestResult.className = 'device-test-feedback test-error';
+                manualTestResult.textContent = `❌ Error: ${e.message || e}`;
+            } finally {
+                testManualRtspBtn.disabled = false;
+                testManualRtspBtn.textContent = '🧪 Probar Stream';
+            }
+        });
+    }
+
+    async function assignManualUrl(targetCam) {
+        const rtspUrl = manualRtspInput ? manualRtspInput.value.trim() : '';
+        if (!rtspUrl) {
+            alert('Ingresa una URL RTSP primero');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/scanner/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    camera_id: targetCam,
+                    rtsp_url: rtspUrl
+                })
+            });
+            let result = {};
+            try {
+                result = await res.json();
+            } catch (pe) {
+                throw new Error(`Código ${res.status}`);
+            }
+            if (result.success) {
+                alert(`✅ ¡${targetCam.toUpperCase()} configurada y reconectada con éxito!`);
+                closeModal();
+                refreshActiveFeeds();
+                pollStatus();
+            } else {
+                alert(`Error: ${result.error || 'No se pudo guardar la URL'}`);
+            }
+        } catch (e) {
+            alert(`❌ ${e.message || e}`);
+        }
+    }
+
+    if (assignManualCam1Btn) assignManualCam1Btn.addEventListener('click', () => assignManualUrl('cam1'));
+    if (assignManualCam2Btn) assignManualCam2Btn.addEventListener('click', () => assignManualUrl('cam2'));
+
+    // Botones de Restauración de Fábrica / Defaults
+    const btnRestoreCam1Tuya = document.getElementById('btnRestoreCam1Tuya');
+    const btnRestoreCam2Icam = document.getElementById('btnRestoreCam2Icam');
+
+    if (btnRestoreCam1Tuya) {
+        btnRestoreCam1Tuya.addEventListener('click', async () => {
+            if (!confirm('¿Deseas restaurar Cámara 1 a la configuración original de Tuya Bridge (rtsp://localhost:8554/Cámara_de_nubes/hd)?')) return;
+            try {
+                const res = await fetch('/api/scanner/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        camera_id: 'cam1',
+                        rtsp_url: 'rtsp://localhost:8554/Cámara_de_nubes/hd',
+                        name: 'Cámara 1 (Tuya PTZ)'
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('✅ Cámara 1 restaurada al Bridge Tuya correctamente.');
+                    closeModal();
+                    refreshActiveFeeds();
+                    pollStatus();
+                } else {
+                    alert(`Error: ${result.error || 'No se pudo restaurar'}`);
+                }
+            } catch (e) {
+                alert(`❌ Error: ${e.message || e}`);
+            }
+        });
+    }
+
+    if (btnRestoreCam2Icam) {
+        btnRestoreCam2Icam.addEventListener('click', async () => {
+            if (!confirm('¿Deseas restaurar Cámara 2 a iCam365 estándar (rtsp://admin:admin@192.168.1.18:554/live/ch0)?')) return;
+            try {
+                const res = await fetch('/api/scanner/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        camera_id: 'cam2',
+                        rtsp_url: 'rtsp://admin:admin@192.168.1.18:554/live/ch0',
+                        name: 'Cámara 2 (iCam365)'
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('✅ Cámara 2 restaurada a iCam365 correctamente.');
+                    closeModal();
+                    refreshActiveFeeds();
+                    pollStatus();
+                } else {
+                    alert(`Error: ${result.error || 'No se pudo restaurar'}`);
+                }
+            } catch (e) {
+                alert(`❌ Error: ${e.message || e}`);
+            }
+        });
+    }
+}
+
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', () => {
     // En celulares: evitar el Mosaico Dual (2 streams MJPEG simultáneos saturan Safari/Chrome móvil)
@@ -2126,6 +2582,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initScheduleControls();
     initPerCameraControls();
     initSystemCapabilities();
+    initNetworkScannerModal();
     pollStatus();
     setInterval(pollStatus, 2500);
 });
+

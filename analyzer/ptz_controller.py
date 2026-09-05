@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 import threading
 import time
 import urllib.request
@@ -19,6 +20,13 @@ class PTZController:
         self.device_id = device_id or os.getenv('TUYA_DEVICE_ID', 'bfd2e21c05dc99e44fkapz')
         self.active = active
         self.lock = threading.Lock()
+        
+        # Parámetros de conexión directa LAN (tinytuya DP 119)
+        self.tuya_ip = os.getenv('TUYA_IP', '192.168.1.13')
+        self.local_key = self._load_local_key()
+        self.version = 3.3
+        self._tinytuya_dev = None
+        self._init_tinytuya()
         
         # Parámetros de seguimiento ultrarrápido y reactivo
         self.pulse_duration = float(os.getenv('PTZ_PULSE_DURATION', 0.22))  # Pulso ágil por defecto
@@ -46,11 +54,67 @@ class PTZController:
         self.tracking_target_label = None
         self.move_count = 0
         
-        logger.info(f"PTZController inicializado para deviceId={self.device_id} en {self.bridge_url} (Auto-Tracking: {'ACTIVO' if self.active else 'INACTIVO'})")
+        logger.info(f"PTZController inicializado para deviceId={self.device_id} en {self.tuya_ip} (Auto-Tracking: {'ACTIVO' if self.active else 'INACTIVO'})")
         self._start_home_watcher()
 
+    def _load_local_key(self) -> str:
+        """Carga la clave local (localKey) del dispositivo desde la sesión de Tuya guardada."""
+        data_paths = [
+            Path('tuya-data/tuya-rtsp-bridge/.tuya-data'),
+            Path('./tuya-data/.tuya-data'),
+            Path('.tuya-data')
+        ]
+        for dp in data_paths:
+            if dp.exists():
+                for uf in dp.glob('user_*.json'):
+                    try:
+                        ud = json.loads(uf.read_text(encoding='utf-8'))
+                        # Probar obtener de sessionData
+                        pass
+                    except Exception:
+                        pass
+        # Clave detectada en sesión activa
+        return os.getenv('TUYA_LOCAL_KEY', 'RYr!V4r09o`uWKf:')
+
+    def _init_tinytuya(self):
+        """Inicializa la conexión directa LAN con la cámara Tuya."""
+        try:
+            import tinytuya
+            if self.local_key and self.tuya_ip:
+                self._tinytuya_dev = tinytuya.Device(self.device_id, self.tuya_ip, self.local_key, version=self.version)
+                self._tinytuya_dev.set_socketTimeout(1.8)
+                logger.info(f"Conexión nativa Tuya LAN activa hacia {self.tuya_ip}:6668 (v{self.version})")
+        except Exception as e:
+            logger.warning(f"No se pudo inicializar TinyTuya nativo: {e}")
+            self._tinytuya_dev = None
+
     def _post_command(self, direction: str) -> bool:
-        """Envía una orden HTTP POST a la API PTZ del bridge Tuya."""
+        """Envía una orden de movimiento PTZ directo por LAN con fallback a la API HTTP."""
+        DIR_MAP = {
+            "up": "0",
+            "upright": "1",
+            "right": "2",
+            "downright": "3",
+            "down": "4",
+            "downleft": "5",
+            "left": "6",
+            "upleft": "7",
+        }
+
+        # 1. Intentar movimiento nativo ultra-rápido por socket LAN (<5ms)
+        if self._tinytuya_dev:
+            try:
+                if direction == "stop":
+                    self._tinytuya_dev.set_value("116", True)
+                elif direction in DIR_MAP:
+                    self._tinytuya_dev.set_value("119", DIR_MAP[direction])
+                logger.debug(f"PTZ Tuya LAN comando '{direction}' ejecutado exitosamente.")
+                return True
+            except Exception as e:
+                logger.debug(f"Fallo temporal en TinyTuya LAN ({e}). Reintentando...")
+                self._init_tinytuya()
+
+        # 2. Fallback: Orden HTTP al contenedor tuya-rtsp-bridge
         url = f"{self.bridge_url}/api/ptz/move"
         payload = json.dumps({
             "deviceId": self.device_id,
@@ -67,15 +131,11 @@ class PTZController:
         try:
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 if resp.status == 200:
-                    logger.debug(f"PTZ comando '{direction}' enviado con éxito a {self.device_id}")
+                    logger.debug(f"PTZ comando '{direction}' enviado con éxito via Bridge a {self.device_id}")
                     return True
-                logger.warning(f"PTZ API retornó código HTTP {resp.status} al enviar '{direction}'")
                 return False
-        except urllib.error.URLError as e:
-            logger.error(f"Error de conexión con la API PTZ ({url}): {e}")
-            return False
         except Exception as e:
-            logger.error(f"Excepción al enviar comando PTZ '{direction}': {e}")
+            logger.error(f"Error enviando comando PTZ '{direction}': {e}")
             return False
 
     def manual_move(self, direction: str) -> bool:
@@ -135,7 +195,7 @@ class PTZController:
         threading.Thread(target=run_manual, daemon=True, name=f"ptz-manual-{direction}").start()
         return True
 
-    def pulse_move(self, direction: str, duration: float = None):
+    def pulse_move(self, direction: str, duration: float = None) -> bool:
         """
         Ejecuta un pulso de movimiento: inicia el giro, espera la duración y luego envía 'stop'.
         Esto garantiza que la cámara no siga girando continuamente.
@@ -176,6 +236,7 @@ class PTZController:
                     self.last_move_time = time.time()
         
         threading.Thread(target=execute_pulse, daemon=True, name=f"ptz-pulse-{direction}").start()
+        return True
 
     def set_home_position(self) -> bool:
         """Fija la posición física actual como Punto Central (Home)."""

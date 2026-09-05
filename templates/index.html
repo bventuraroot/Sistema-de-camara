@@ -41,6 +41,10 @@
                         <span class="icon">📁</span> Mediateca / Grabaciones
                     </a>
                 </div>
+                <button type="button" class="spec-badge spec-badge-clickable" id="btnOpenScanner" title="Analizador de Red y Detección de IPs de Cámaras (haz clic para buscar cámaras si cambió la IP)">
+                    <span class="spec-label">RED</span>
+                    <span class="spec-value" id="networkScanBadge">🔍 Analizar IPs</span>
+                </button>
                 <button type="button" class="spec-badge spec-badge-clickable" id="systemProfileBtn" title="Capacidades de este equipo y modo de rendimiento (haz clic para ver detalles)">
                     <span class="spec-label">PERFIL</span>
                     <span class="spec-value" id="systemProfileText">{{ system_profile.profile_badge if system_profile else '⚡ Auto' }}</span>
@@ -692,6 +696,97 @@
                 <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.6rem;">
                     <button type="button" class="btn btn-sm btn-outline" id="capabilitiesCancelBtn">Cerrar</button>
                     <button type="button" class="btn btn-sm btn-primary" id="capabilitiesSaveBtn">💾 Guardar y Aplicar Modo</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal Analizador de Red e IPs de Cámaras -->
+        <div class="snapshot-modal" id="scannerModal" style="display: none;">
+            <div class="modal-backdrop" id="scannerBackdrop"></div>
+            <div class="modal-content" style="max-width: 820px; width: 95%;">
+                <div class="modal-header">
+                    <div class="modal-header-left">
+                        <h4>🔍 Analizador de Red y Detector de Cámaras IP</h4>
+                        <span class="badge-ai" style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">CCTV Network Scanner</span>
+                    </div>
+                    <button class="modal-close" id="scannerCloseBtn">&times;</button>
+                </div>
+
+                <div class="modal-body" style="max-height: 75vh; overflow-y: auto; padding: 1.2rem; display: flex; flex-direction: column; gap: 1.1rem;">
+                    <!-- Barra de control del escaneo -->
+                    <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 0.9rem 1rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
+                            <div>
+                                <span style="font-size: 0.75rem; color: var(--text-muted); display: block; text-transform: uppercase;">Subred a Analizar:</span>
+                                <div style="display: flex; align-items: center; gap: 0.4rem; margin-top: 0.2rem;">
+                                    <input type="text" id="scanSubnetInput" placeholder="192.168.1." style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; padding: 0.35rem 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.85rem; width: 140px;">
+                                    <span style="font-size: 0.8rem; color: #94a3b8;">0 / 24</span>
+                                </div>
+                            </div>
+
+                            <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                                <button type="button" class="btn btn-sm btn-primary" id="startScanBtn" style="padding: 0.5rem 1.1rem; font-weight: 600;">
+                                    <span id="startScanIcon">⚡</span> <span id="startScanText">Escanear Red Ahora</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Estado / progreso animado -->
+                        <div id="scanStatusBanner" style="display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem; color: #94a3b8; background: rgba(0,0,0,0.25); padding: 0.4rem 0.75rem; border-radius: 6px;">
+                            <span id="scanStatusMsg">Listo para buscar cámaras ONVIF / RTSP en tu Wi-Fi / LAN local.</span>
+                            <span id="scanCounterText" style="font-family: var(--font-mono); color: #38bdf8;"></span>
+                        </div>
+                    </div>
+
+                    <!-- Lista de Cámaras Encontradas -->
+                    <div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h5 style="margin: 0; font-size: 0.85rem; color: #f8fafc;">📡 Dispositivos de Video Detectados (<span id="scanFoundCount">0</span>):</h5>
+                            <span style="font-size: 0.72rem; color: #64748b;">Doble sondeo: Sonda ONVIF UDP + Puertos RTSP (554, 8899, 80, 5000)</span>
+                        </div>
+
+                        <div id="scannedDevicesList" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                            <!-- Placeholder inicial -->
+                            <div class="empty-scan-state" style="text-align: center; padding: 2rem 1rem; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 8px;">
+                                <span style="font-size: 2.2rem; display: block; margin-bottom: 0.5rem;">🔍</span>
+                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">Haz clic en <strong>"Escanear Red Ahora"</strong> para buscar cámaras conectadas a tu red.</p>
+                                <p style="color: #64748b; font-size: 0.75rem; margin-top: 0.3rem;">Detectará automáticamente si la cámara cambió de IP tras reiniciar el Router.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Herramienta de Prueba Manual de IP / RTSP -->
+                    <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 0.9rem 1rem;">
+                        <h5 style="margin-top: 0; margin-bottom: 0.4rem; font-size: 0.82rem; color: #cbd5e1;">🛠️ Prueba y Asignación Manual de URL RTSP:</h5>
+                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                <input type="text" id="manualRtspInput" placeholder="rtsp://admin:admin@192.168.1.50:554/live/ch0" style="flex: 1; min-width: 250px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; padding: 0.4rem 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.8rem;">
+                                <button type="button" class="btn btn-xs btn-outline" id="testManualRtspBtn">🧪 Probar Stream</button>
+                            </div>
+                            <div id="manualTestResult" style="display: none; font-size: 0.76rem; padding: 0.35rem 0.6rem; border-radius: 4px;"></div>
+                            <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.2rem;">
+                                <button type="button" class="btn btn-xs btn-outline" id="assignManualCam1Btn">📌 Asignar a Cámara 1</button>
+                                <button type="button" class="btn btn-xs btn-primary" id="assignManualCam2Btn">📌 Asignar a Cámara 2</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Botones de Restauración de Fábrica / Defaults -->
+                    <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 8px; padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
+                        <span style="font-size: 0.76rem; color: #bae6fd;">🔄 <strong>Restaurar Configuración Original si hubo error:</strong></span>
+                        <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-xs btn-outline" id="btnRestoreCam1Tuya" title="Restaurar Cámara 1 al Bridge Tuya Local">
+                                🛡️ Restaurar Cam 1 (Tuya Bridge)
+                            </button>
+                            <button type="button" class="btn btn-xs btn-outline" id="btnRestoreCam2Icam" title="Restaurar Cámara 2 a iCam365">
+                                📹 Restaurar Cam 2 (iCam365)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.6rem;">
+                    <button type="button" class="btn btn-sm btn-outline" id="scannerCloseFooterBtn">Cerrar</button>
                 </div>
             </div>
         </div>

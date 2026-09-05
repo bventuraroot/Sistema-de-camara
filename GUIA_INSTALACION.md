@@ -68,15 +68,26 @@ El sistema incorpora un **motor de auto-diagnóstico** (`SystemProfiler`) que an
 
 ---
 
-## 4. 🔍 Cómo Descubrir la IP de la Cámara en la Casa del Vecino
+## 4. 🔍 Analizador de Red y Detección Automática de IPs de Cámaras
 
-El sistema cuenta con un escáner automático de red integrado. 
+Si la cámara **cambió de IP por DHCP**, se reinició el Router, o no sabes qué IP tiene:
 
-1. Conecta la cámara Wi-Fi o Ethernet a la misma red de la casa.
-2. Inicia el sistema y abre en el navegador:
-   * **`http://localhost:5001`** (desde la misma máquina) o **`http://<IP_LOCAL>:5001`** (desde cualquier PC o celular en la casa).
-3. El escáner ONVIF detectará automáticamente cualquier cámara presente en la red local enviando un sondeo multicast estándar (`239.255.255.250:3702`).
-4. También puedes usar herramientas gratuitas para celular como **Fing** o **ONVIF Device Manager** (Windows) para ver la IP asignada (ej. `192.168.1.50`).
+### Opción A: Desde el Panel Web (1 Clic)
+1. Abre el panel en tu navegador: **`http://localhost:5001`** (o desde tu celular `http://<IP_LOCAL>:5001`).
+2. En la barra superior, haz clic en el botón **`[RED 🔍 Analizar IPs]`**.
+3. Haz clic en **"⚡ Escanear Red Ahora"**:
+   - El sistema enviará sondas ONVIF UDP y escaneará los puertos de video (`554`, `8899`, `80`, `5000`, etc.) en toda tu red local en ~2 segundos.
+   - Mostrará las cámaras encontradas, su IP exacta, marca (iCam365, iCSee, Yoosee, Dahua, etc.) y latencia.
+   - Puedes hacer clic en **"🧪 Probar Video"** para verificar que responde.
+   - Haz clic en **"📌 Asignar a Cámara 1"** o **"📌 Asignar a Cámara 2"** para reconectarla **al instante sin reiniciar el sistema**.
+
+### Opción B: Desde la Terminal o Script Rápido
+- **En macOS / Linux:**
+  ```bash
+  ./escanear_ips.sh
+  ```
+- **En Windows:**
+  Haz doble clic en **`escanear_ips.bat`** (o ejecuta `python escanear_ips.py`).
 
 ---
 

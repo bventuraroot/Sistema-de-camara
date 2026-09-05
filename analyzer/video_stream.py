@@ -9,13 +9,18 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # Configuración robusta para decodificación RTSP sobre TCP y soporte H.264/H.265
-# timeout: timeout de conexión/lectura en microsegundos (5s)
-# fflags=nobuffer y flags=low_delay eliminan la latencia de cola y desincronización de POC/slices
+# - rtsp_transport;tcp: evita pérdida de paquetes UDP por Wi-Fi
+# - fflags;nobuffer+discardcorrupt: descarta paquetes dañados para evitar cuadros grises/rotos
+# - reorder_queue_size;10: tolera jitter y paquetes fuera de orden sin corromper fotogramas
+# - buffer_size;1048576: buffer TCP de 1MB para estabilidad
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|"
     "timeout;5000000|"
-    "fflags;nobuffer|"
+    "fflags;nobuffer+discardcorrupt|"
     "flags;low_delay|"
+    "reorder_queue_size;10|"
+    "buffer_size;1048576|"
+    "max_delay;500000|"
     "analyzeduration;1000000|"
     "probesize;1000000"
 )

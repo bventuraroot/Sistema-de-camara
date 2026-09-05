@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import socket
+import re
 import cv2
 import json
 import threading
@@ -9,6 +10,7 @@ import shutil
 from queue import Queue
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from flask import Flask, render_template, Response, jsonify, request, send_from_directory, send_file
 from dotenv import load_dotenv
 import logging
@@ -812,19 +814,89 @@ def scanner_presets():
 def scanner_discover():
     """Escanea la red local y retorna las cámaras descubiertas (ONVIF + puertos RTSP)."""
     try:
-        res = scan_network_cameras()
+        data = request.json if request.is_json else {}
+        custom_subnet = data.get('subnet') if data else request.args.get('subnet')
+        res = scan_network_cameras(custom_subnet=custom_subnet)
         return jsonify(res)
     except Exception as e:
-        logger.error(f"Error en scanner_discover: {e}")
+        logger.error(f"Error en scanner_discover: {e}", exc_info=True)
         return jsonify({'error': str(e), 'count': 0, 'devices': []}), 500
 
 @app.route('/api/scanner/test_stream', methods=['POST'])
 def scanner_test_stream():
-    """Prueba si una URL RTSP responde con video."""
-    data = request.json or {}
+    """Prueba si una URL RTSP responde con video en vivo y retorna resolución y latencia."""
+    data = request.get_json(force=True, silent=True) or {}
     rtsp_url = data.get('rtsp_url', '').strip()
     result = test_rtsp_connection(rtsp_url)
     return jsonify(result)
+
+@app.route('/api/scanner/apply', methods=['POST'])
+@app.route('/api/camera/<cid>/update_url', methods=['POST'])
+def scanner_apply_camera(cid=None):
+    """
+    Aplica una nueva IP / URL RTSP a una cámara específica, actualiza la configuración
+    persistente y reinicia el flujo de video en caliente.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    target_cid = cid or data.get('camera_id') or 'cam1'
+    new_rtsp = data.get('rtsp_url', '').strip()
+    new_name = data.get('name', '').strip()
+
+    if target_cid not in cameras:
+        return jsonify({'success': False, 'error': f'Cámara {target_cid} no existe'}), 404
+    
+    if not new_rtsp:
+        return jsonify({'success': False, 'error': 'La URL RTSP no puede estar vacía'}), 400
+
+    cam = cameras[target_cid]
+    settings = get_all_settings()
+    sc = settings.get('cameras', {})
+    if target_cid not in sc:
+        sc[target_cid] = {}
+
+    sc[target_cid]['rtsp_url'] = new_rtsp
+    if new_name:
+        sc[target_cid]['name'] = new_name
+        cam['name'] = new_name
+    cam['rtsp_url'] = new_rtsp
+
+    # Extraer IP de la nueva URL
+    ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', new_rtsp)
+    extracted_ip = ip_match.group(1) if ip_match else 'desconocida'
+
+    # Si es cam2 y tiene controlador PTZ iCam365, actualizar la IP destino del PTZ
+    if target_cid == 'cam2' and icam_ptz and ip_match:
+        try:
+            icam_ptz.ip = extracted_ip
+            logger.info(f"IP de PTZ iCam365 actualizada a {extracted_ip}")
+        except Exception as e:
+            logger.warning(f"No se pudo actualizar IP en icam_ptz: {e}")
+
+    save_setting('cameras', sc)
+
+    # Reiniciar stream de video en caliente
+    old_stream = cam.get('stream')
+    if old_stream:
+        try:
+            old_stream.stop()
+        except Exception as e:
+            logger.warning(f"Error deteniendo stream previo de {target_cid}: {e}")
+
+    time.sleep(0.4)
+    try:
+        cam['stream'] = VideoStream(new_rtsp, fallback_url=cam.get('fallback_url'))
+        logger.info(f"✅ Cámara {target_cid} reconectada exitosamente con URL: {new_rtsp}")
+        return jsonify({
+            'success': True,
+            'camera_id': target_cid,
+            'name': cam['name'],
+            'rtsp_url': new_rtsp,
+            'ip': extracted_ip,
+            'message': f"Cámara '{cam['name']}' conectada a {extracted_ip}"
+        })
+    except Exception as e:
+        logger.error(f"Error reiniciando stream tras cambio de IP: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/settings/storage', methods=['GET', 'POST'])
 def settings_storage():
