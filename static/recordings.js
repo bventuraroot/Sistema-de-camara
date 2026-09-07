@@ -28,8 +28,10 @@ const selectAllCheckbox = document.getElementById('selectAllCheckbox');
 const selectAllListCheckbox = document.getElementById('selectAllListCheckbox');
 const selectedCountText = document.getElementById('selectedCountText');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+const purge7Btn = document.getElementById('purge7Btn');
 const purge15Btn = document.getElementById('purge15Btn');
 const purge30Btn = document.getElementById('purge30Btn');
+const purgeCustomBtn = document.getElementById('purgeCustomBtn');
 
 // Elementos de Paginación
 const paginationBar = document.getElementById('paginationBar');
@@ -869,8 +871,22 @@ async function purgeOlderThan(days) {
     }
 }
 
-purge15Btn.addEventListener('click', () => purgeOlderThan(15));
-purge30Btn.addEventListener('click', () => purgeOlderThan(30));
+if (purge7Btn) purge7Btn.addEventListener('click', () => purgeOlderThan(7));
+if (purge15Btn) purge15Btn.addEventListener('click', () => purgeOlderThan(15));
+if (purge30Btn) purge30Btn.addEventListener('click', () => purgeOlderThan(30));
+if (purgeCustomBtn) {
+    purgeCustomBtn.addEventListener('click', () => {
+        const inputDays = prompt("🧹 Purgar Grabaciones por Días:\n\nIngrese la antigüedad mínima en días para eliminar (ejemplo: 5, 7, 10, 20):", "7");
+        if (inputDays !== null) {
+            const days = parseInt(inputDays.trim(), 10);
+            if (!isNaN(days) && days >= 0) {
+                purgeOlderThan(days);
+            } else {
+                alert("Por favor ingrese un número válido de días mayores o iguales a 0.");
+            }
+        }
+    });
+}
 
 reloadMediaBtn.addEventListener('click', loadMediaItems);
 refreshStorageBtn.addEventListener('click', loadStorageEstimate);

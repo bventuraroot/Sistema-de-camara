@@ -14,7 +14,7 @@
       "rtsp_url": "rtsp://localhost:8554/C\u00e1mara_de_nubes/hd",
       "fallback_url": null,
       "ptz": true,
-      "motion_detection": false,
+      "motion_detection": true,
       "event_recording": true,
       "auto_tracking": true,
       "continuous_recording": false,
