@@ -30,9 +30,10 @@ const selectedCountText = document.getElementById('selectedCountText');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
 const openPurgeModalBtn = document.getElementById('openPurgeModalBtn');
 const openRetentionBtn = document.getElementById('openRetentionBtn');
+const purge1Btn = document.getElementById('purge1Btn');
+const purge3Btn = document.getElementById('purge3Btn');
 const purge7Btn = document.getElementById('purge7Btn');
 const purge15Btn = document.getElementById('purge15Btn');
-const purge30Btn = document.getElementById('purge30Btn');
 const purgeDateBtn = document.getElementById('purgeDateBtn');
 
 // Elementos del Modal de Purga Inteligente
@@ -965,9 +966,10 @@ function closePurgeModal() {
 
 if (openPurgeModalBtn) openPurgeModalBtn.addEventListener('click', () => openPurgeModal(7, 'manual'));
 if (openRetentionBtn) openRetentionBtn.addEventListener('click', () => openPurgeModal(30, 'auto'));
+if (purge1Btn) purge1Btn.addEventListener('click', () => openPurgeModal(1, 'manual'));
+if (purge3Btn) purge3Btn.addEventListener('click', () => openPurgeModal(3, 'manual'));
 if (purge7Btn) purge7Btn.addEventListener('click', () => openPurgeModal(7, 'manual'));
 if (purge15Btn) purge15Btn.addEventListener('click', () => openPurgeModal(15, 'manual'));
-if (purge30Btn) purge30Btn.addEventListener('click', () => openPurgeModal(30, 'manual'));
 
 if (closePurgeModalBtn) closePurgeModalBtn.addEventListener('click', closePurgeModal);
 if (cancelPurgeBtn) cancelPurgeBtn.addEventListener('click', closePurgeModal);

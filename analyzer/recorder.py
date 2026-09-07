@@ -576,6 +576,13 @@ class Recorder:
             
             if target and target.is_file():
                 target.unlink()
+                # Eliminar archivos auxiliares con el mismo prefijo (ej. .audio.m4a)
+                for sidecar in target.parent.glob(f"{target.stem}*"):
+                    if sidecar.is_file() and sidecar != target:
+                        try:
+                            sidecar.unlink()
+                        except Exception:
+                            pass
                 logger.info(f"Archivo eliminado exitosamente: {target}")
                 if target.parent != self.snapshots_dir and not any(target.parent.iterdir()):
                     try:
