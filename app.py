@@ -84,6 +84,8 @@ def get_all_settings():
         'object_detection': True,
         'continuous_recording': os.getenv('CONTINUOUS_RECORDING', 'false').lower() == 'true',
         'auto_tracking': True,
+        'max_recording_days': int(os.getenv('MAX_RECORDING_DAYS', 30)),
+        'auto_purge_enabled': True,
         'cameras': {
             'cam1': {
                 'id': 'cam1',
@@ -492,7 +494,7 @@ def init_components():
     # 2. Inicializar cámaras y grabadores
     base_rec_dir = str(get_storage_dir())
     seg_min = int(os.getenv('SEGMENT_MINUTES', 10))
-    max_days = int(os.getenv('MAX_RECORDING_DAYS', 30))
+    max_days = int(settings.get('max_recording_days', os.getenv('MAX_RECORDING_DAYS', 30)))
     cont_rec = settings.get('continuous_recording', False)
     
     saved_cams = settings.get('cameras', {})
@@ -915,6 +917,34 @@ def settings_storage():
             return jsonify({'success': False, 'error': str(e)}), 400
     else:
         return jsonify({'storage_path': str(get_storage_dir())})
+
+@app.route('/api/settings/retention', methods=['GET', 'POST'])
+def settings_retention():
+    """Consulta o actualiza la política de retención automática por días."""
+    if request.method == 'POST':
+        data = request.json or {}
+        max_days = data.get('max_recording_days')
+        auto_purge = data.get('auto_purge_enabled', True)
+        if max_days is None:
+            return jsonify({'success': False, 'error': 'Falta el parámetro max_recording_days'}), 400
+        try:
+            days_int = max(1, int(max_days))
+            save_setting('max_recording_days', days_int)
+            save_setting('auto_purge_enabled', bool(auto_purge))
+            # Actualizar instancias de grabadores en tiempo de ejecución
+            for c in cameras.values():
+                rec = c.get('recorder')
+                if rec and hasattr(rec, 'set_max_days'):
+                    rec.set_max_days(days_int)
+            return jsonify({'success': True, 'max_recording_days': days_int, 'auto_purge_enabled': bool(auto_purge)})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 400
+    else:
+        settings = get_all_settings()
+        return jsonify({
+            'max_recording_days': settings.get('max_recording_days', 30),
+            'auto_purge_enabled': settings.get('auto_purge_enabled', True)
+        })
 
 # ----------------- RUTAS DE LA API Y WEB -----------------
 
@@ -1668,6 +1698,11 @@ def get_all_media():
 _storage_estimate_cache = {'data': None, 'timestamp': 0}
 _STORAGE_CACHE_TTL = 60  # segundos
 
+def invalidate_storage_cache():
+    """Invalida la caché en memoria de estimación de disco para refresco inmediato."""
+    _storage_estimate_cache['data'] = None
+    _storage_estimate_cache['timestamp'] = 0
+
 @app.route('/api/storage/estimate')
 def storage_estimate():
     """Retorna desglose del disco y cálculo de días restantes (con caché de 60s)."""
@@ -1752,25 +1787,147 @@ def delete_single_media():
             deleted = True
             break
 
+    if deleted:
+        invalidate_storage_cache()
+
     return jsonify({'success': deleted, 'filename': filename})
+
+@app.route('/api/media/purge-preview', methods=['POST'])
+def purge_preview_media():
+    """Simula la purga de archivos por días o fecha específica sin borrar (dry-run)."""
+    data = request.get_json(silent=True) or {}
+    days_older_than = data.get('days_older_than')
+    specific_date = data.get('specific_date')
+    target_type = data.get('target_type', 'all')  # all | continuous | clip | snapshot
+    camera_id = data.get('camera_id', 'all')      # all | cam1 | cam2
+
+    total_count = 0
+    total_freed_bytes = 0
+    all_affected_days = set()
+    breakdown = {
+        'continuous_count': 0, 'continuous_bytes': 0,
+        'clip_count': 0, 'clip_bytes': 0,
+        'snapshot_count': 0, 'snapshot_bytes': 0
+    }
+    cams_data = {}
+
+    for cid, c in cameras.items():
+        if camera_id != 'all' and camera_id != cid:
+            continue
+        rec = c.get('recorder')
+        if not rec:
+            continue
+
+        if specific_date:
+            res = rec.purge_specific_date(specific_date, target_type=target_type, dry_run=True)
+        elif days_older_than is not None:
+            days = max(0, int(days_older_than))
+            res = rec.purge_older_than(days, target_type=target_type, dry_run=True)
+        else:
+            return jsonify({'success': False, 'error': 'Debe especificar days_older_than o specific_date'}), 400
+
+        cams_data[cid] = res
+        total_count += res.get('deleted_count', 0)
+        total_freed_bytes += res.get('freed_bytes', 0)
+        for d in res.get('affected_days', []):
+            all_affected_days.add(d)
+        
+        b = res.get('breakdown', {})
+        for k in breakdown:
+            breakdown[k] += b.get(k, 0)
+
+    return jsonify({
+        'success': True,
+        'total_count': total_count,
+        'freed_bytes': total_freed_bytes,
+        'freed_mb': round(total_freed_bytes / (1024 * 1024), 2),
+        'freed_gb': round(total_freed_bytes / (1024**3), 3),
+        'affected_days': sorted(list(all_affected_days)),
+        'breakdown': {
+            'continuous_count': breakdown['continuous_count'],
+            'continuous_mb': round(breakdown['continuous_bytes'] / (1024 * 1024), 2),
+            'clip_count': breakdown['clip_count'],
+            'clip_mb': round(breakdown['clip_bytes'] / (1024 * 1024), 2),
+            'snapshot_count': breakdown['snapshot_count'],
+            'snapshot_mb': round(breakdown['snapshot_bytes'] / (1024 * 1024), 2)
+        },
+        'target_type': target_type,
+        'camera_id': camera_id,
+        'days': days_older_than,
+        'specific_date': specific_date
+    })
 
 @app.route('/api/media/bulk-delete', methods=['POST'])
 def bulk_delete_media():
-    """Elimina múltiples archivos o purga por días de antigüedad."""
+    """Elimina múltiples archivos o purga por días de antigüedad / fecha específica."""
     data = request.get_json(silent=True) or {}
     items = data.get('items', [])
     days_older_than = data.get('days_older_than')
+    specific_date = data.get('specific_date')
+    target_type = data.get('target_type', 'all')  # all | continuous | clip | snapshot
+    camera_id = data.get('camera_id', 'all')      # all | cam1 | cam2
 
-    deleted_count = 0
-
-    if days_older_than is not None:
-        days = int(days_older_than)
-        for c in cameras.values():
+    # 1. Purga por fecha específica (un día completo)
+    if specific_date:
+        total_deleted = 0
+        total_freed_bytes = 0
+        all_affected_days = set()
+        for cid, c in cameras.items():
+            if camera_id != 'all' and camera_id != cid:
+                continue
             rec = c.get('recorder')
             if rec:
-                deleted_count += rec.bulk_delete_older_than(days)
-        return jsonify({'success': True, 'deleted_count': deleted_count, 'mode': 'older_than', 'days': days})
+                res = rec.purge_specific_date(specific_date, target_type=target_type, dry_run=False)
+                total_deleted += res.get('deleted_count', 0)
+                total_freed_bytes += res.get('freed_bytes', 0)
+                for d in res.get('affected_days', []):
+                    all_affected_days.add(d)
 
+        invalidate_storage_cache()
+        return jsonify({
+            'success': True,
+            'deleted_count': total_deleted,
+            'freed_bytes': total_freed_bytes,
+            'freed_mb': round(total_freed_bytes / (1024 * 1024), 2),
+            'freed_gb': round(total_freed_bytes / (1024**3), 3),
+            'affected_days': sorted(list(all_affected_days)),
+            'mode': 'specific_date',
+            'specific_date': specific_date,
+            'target_type': target_type
+        })
+
+    # 2. Purga por días de antigüedad
+    if days_older_than is not None:
+        days = max(0, int(days_older_than))
+        total_deleted = 0
+        total_freed_bytes = 0
+        all_affected_days = set()
+        for cid, c in cameras.items():
+            if camera_id != 'all' and camera_id != cid:
+                continue
+            rec = c.get('recorder')
+            if rec:
+                res = rec.purge_older_than(days, target_type=target_type, dry_run=False)
+                total_deleted += res.get('deleted_count', 0)
+                total_freed_bytes += res.get('freed_bytes', 0)
+                for d in res.get('affected_days', []):
+                    all_affected_days.add(d)
+
+        invalidate_storage_cache()
+        return jsonify({
+            'success': True,
+            'deleted_count': total_deleted,
+            'freed_bytes': total_freed_bytes,
+            'freed_mb': round(total_freed_bytes / (1024 * 1024), 2),
+            'freed_gb': round(total_freed_bytes / (1024**3), 3),
+            'affected_days': sorted(list(all_affected_days)),
+            'mode': 'older_than',
+            'days': days,
+            'target_type': target_type
+        })
+
+    # 3. Borrado de elementos seleccionados por lista
+    deleted_count = 0
     for it in items:
         cid = it.get('camera_id')
         file_type = it.get('file_type')
@@ -1787,6 +1944,9 @@ def bulk_delete_media():
         else:
             if rec.delete_file(file_type, filename, day=day):
                 deleted_count += 1
+
+    if deleted_count > 0:
+        invalidate_storage_cache()
 
     return jsonify({'success': True, 'deleted_count': deleted_count})
 

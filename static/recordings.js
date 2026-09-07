@@ -28,10 +28,33 @@ const selectAllCheckbox = document.getElementById('selectAllCheckbox');
 const selectAllListCheckbox = document.getElementById('selectAllListCheckbox');
 const selectedCountText = document.getElementById('selectedCountText');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+const openPurgeModalBtn = document.getElementById('openPurgeModalBtn');
+const openRetentionBtn = document.getElementById('openRetentionBtn');
 const purge7Btn = document.getElementById('purge7Btn');
 const purge15Btn = document.getElementById('purge15Btn');
 const purge30Btn = document.getElementById('purge30Btn');
-const purgeCustomBtn = document.getElementById('purgeCustomBtn');
+const purgeDateBtn = document.getElementById('purgeDateBtn');
+
+// Elementos del Modal de Purga Inteligente
+const purgeModal = document.getElementById('purgeModal');
+const closePurgeModalBtn = document.getElementById('closePurgeModalBtn');
+const cancelPurgeBtn = document.getElementById('cancelPurgeBtn');
+const purgeModalBackdrop = document.getElementById('purgeModalBackdrop');
+const tabManualPurge = document.getElementById('tabManualPurge');
+const tabAutoRetention = document.getElementById('tabAutoRetention');
+const panelManualPurge = document.getElementById('panelManualPurge');
+const panelAutoRetention = document.getElementById('panelAutoRetention');
+const purgeFooterControls = document.getElementById('purgeFooterControls');
+const purgeCustomDaysInput = document.getElementById('purgeCustomDaysInput');
+const cutoffDateHintText = document.getElementById('cutoffDateHintText');
+const previewStatusBadge = document.getElementById('previewStatusBadge');
+const previewCountVal = document.getElementById('previewCountVal');
+const previewSizeVal = document.getElementById('previewSizeVal');
+const previewBreakdownText = document.getElementById('previewBreakdownText');
+const executePurgeBtn = document.getElementById('executePurgeBtn');
+const retentionDaysInput = document.getElementById('retentionDaysInput');
+const autoPurgeEnabledToggle = document.getElementById('autoPurgeEnabledToggle');
+const saveRetentionBtn = document.getElementById('saveRetentionBtn');
 
 // Elementos de Paginación
 const paginationBar = document.getElementById('paginationBar');
@@ -584,6 +607,7 @@ document.querySelectorAll('#quickDaysGroup .quick-day-btn').forEach(btn => {
 
         currentFilterHour = 'all';
         allHoursBtn.classList.add('active');
+        updateDatePurgeBtnState();
         buildTimelineHours();
         renderFilteredMedia();
     });
@@ -596,6 +620,7 @@ dateFilterInput.addEventListener('change', (e) => {
     timelineSelectedDayBadge.textContent = currentFilterDate || 'Todo';
     currentFilterHour = 'all';
     allHoursBtn.classList.add('active');
+    updateDatePurgeBtnState();
     buildTimelineHours();
     renderFilteredMedia();
 });
@@ -609,6 +634,7 @@ clearDateFilterBtn.addEventListener('click', () => {
     timelineSelectedDayBadge.textContent = 'Todo el Historial';
     currentFilterHour = 'all';
     allHoursBtn.classList.add('active');
+    updateDatePurgeBtnState();
     buildTimelineHours();
     renderFilteredMedia();
 });
@@ -849,41 +875,277 @@ deleteSelectedBtn.addEventListener('click', async () => {
     }
 });
 
-// Purgar grabaciones antiguas
-async function purgeOlderThan(days) {
-    if (!confirm(`¿Deseas purgar todas las grabaciones con más de ${days} días de antigüedad en ambas cámaras?\n\nEsta acción liberará espacio de inmediato.`)) {
-        return;
-    }
-    try {
-        const res = await fetch('/api/media/bulk-delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ days_older_than: days })
-        });
-        const data = await res.json();
-        if (data.success) {
-            alert(`✅ Purgado completado. Se eliminaron ${data.deleted_count} archivos antiguos.`);
-            loadMediaItems();
-            loadStorageEstimate();
-        }
-    } catch (e) {
-        alert(`Error purgando archivos: ${e.message}`);
+// ==========================================================================
+// ASISTENTE DE PURGA INTELIGENTE POR DÍAS Y RETENCIÓN AUTOMÁTICA
+// ==========================================================================
+
+function updateDatePurgeBtnState() {
+    if (!purgeDateBtn) return;
+    if (currentFilterDate && currentFilterDate.trim().length === 10) {
+        purgeDateBtn.style.display = 'inline-block';
+        purgeDateBtn.textContent = `🗑️ Purgar día ${currentFilterDate}`;
+    } else {
+        purgeDateBtn.style.display = 'none';
     }
 }
 
-if (purge7Btn) purge7Btn.addEventListener('click', () => purgeOlderThan(7));
-if (purge15Btn) purge15Btn.addEventListener('click', () => purgeOlderThan(15));
-if (purge30Btn) purge30Btn.addEventListener('click', () => purgeOlderThan(30));
-if (purgeCustomBtn) {
-    purgeCustomBtn.addEventListener('click', () => {
-        const inputDays = prompt("🧹 Purgar Grabaciones por Días:\n\nIngrese la antigüedad mínima en días para eliminar (ejemplo: 5, 7, 10, 20):", "7");
-        if (inputDays !== null) {
-            const days = parseInt(inputDays.trim(), 10);
-            if (!isNaN(days) && days >= 0) {
-                purgeOlderThan(days);
+// Purga directa de la fecha seleccionada en el calendario
+if (purgeDateBtn) {
+    purgeDateBtn.addEventListener('click', async () => {
+        if (!currentFilterDate) return;
+        const ok = confirm(`⚠️ ¿Deseas purgar TODAS las grabaciones del día ${currentFilterDate}?\n\nEsta acción eliminará de inmediato los videos 24/7, clips de eventos y capturas de esa fecha en ambas cámaras.`);
+        if (!ok) return;
+
+        try {
+            purgeDateBtn.disabled = true;
+            purgeDateBtn.textContent = '⏳ Purgando día...';
+            const res = await fetch('/api/media/bulk-delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ specific_date: currentFilterDate, target_type: 'all', camera_id: 'all' })
+            });
+            const data = await res.json();
+            if (data.success) {
+                const freedStr = data.freed_mb > 1024 ? `${data.freed_gb} GB` : `${data.freed_mb} MB`;
+                alert(`✅ Día ${currentFilterDate} purgado con éxito.\n\nArchivos eliminados: ${data.deleted_count}\nEspacio liberado: ${freedStr}`);
+                loadMediaItems();
+                loadStorageEstimate();
             } else {
-                alert("Por favor ingrese un número válido de días mayores o iguales a 0.");
+                alert(`Error al purgar fecha: ${data.error || 'Desconocido'}`);
             }
+        } catch (e) {
+            alert(`Error al conectar con el servidor: ${e.message}`);
+        } finally {
+            purgeDateBtn.disabled = false;
+            updateDatePurgeBtnState();
+        }
+    });
+}
+
+// Gestión de Pestañas del Modal
+if (tabManualPurge && tabAutoRetention) {
+    tabManualPurge.addEventListener('click', () => {
+        tabManualPurge.classList.add('active');
+        tabAutoRetention.classList.remove('active');
+        panelManualPurge.style.display = 'flex';
+        panelAutoRetention.style.display = 'none';
+        purgeFooterControls.style.display = 'flex';
+        updatePurgePreview();
+    });
+
+    tabAutoRetention.addEventListener('click', () => {
+        tabAutoRetention.classList.add('active');
+        tabManualPurge.classList.remove('active');
+        panelManualPurge.style.display = 'none';
+        panelAutoRetention.style.display = 'flex';
+        purgeFooterControls.style.display = 'none';
+        loadRetentionSettings();
+    });
+}
+
+function openPurgeModal(initialDays = 7, targetTab = 'manual') {
+    if (!purgeModal) return;
+    purgeModal.style.display = 'flex';
+
+    if (targetTab === 'auto') {
+        if (tabAutoRetention) tabAutoRetention.click();
+    } else {
+        if (tabManualPurge) tabManualPurge.click();
+        if (purgeCustomDaysInput) purgeCustomDaysInput.value = initialDays;
+        document.querySelectorAll('.preset-chip-btn').forEach(btn => {
+            btn.classList.toggle('active', parseInt(btn.dataset.days, 10) === initialDays);
+        });
+        updatePurgePreview();
+    }
+}
+
+function closePurgeModal() {
+    if (purgeModal) purgeModal.style.display = 'none';
+}
+
+if (openPurgeModalBtn) openPurgeModalBtn.addEventListener('click', () => openPurgeModal(7, 'manual'));
+if (openRetentionBtn) openRetentionBtn.addEventListener('click', () => openPurgeModal(30, 'auto'));
+if (purge7Btn) purge7Btn.addEventListener('click', () => openPurgeModal(7, 'manual'));
+if (purge15Btn) purge15Btn.addEventListener('click', () => openPurgeModal(15, 'manual'));
+if (purge30Btn) purge30Btn.addEventListener('click', () => openPurgeModal(30, 'manual'));
+
+if (closePurgeModalBtn) closePurgeModalBtn.addEventListener('click', closePurgeModal);
+if (cancelPurgeBtn) cancelPurgeBtn.addEventListener('click', closePurgeModal);
+if (purgeModalBackdrop) purgeModalBackdrop.addEventListener('click', closePurgeModal);
+
+// Chips de días preestablecidos
+document.querySelectorAll('.preset-chip-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.preset-chip-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const days = parseInt(btn.dataset.days, 10);
+        if (purgeCustomDaysInput) purgeCustomDaysInput.value = days;
+        updatePurgePreview();
+    });
+});
+
+let _previewDebounce = null;
+if (purgeCustomDaysInput) {
+    purgeCustomDaysInput.addEventListener('input', () => {
+        const val = parseInt(purgeCustomDaysInput.value, 10);
+        document.querySelectorAll('.preset-chip-btn').forEach(b => {
+            b.classList.toggle('active', parseInt(b.dataset.days, 10) === val);
+        });
+        clearTimeout(_previewDebounce);
+        _previewDebounce = setTimeout(updatePurgePreview, 300);
+    });
+}
+
+document.querySelectorAll('input[name="purgeContentType"]').forEach(radio => {
+    radio.addEventListener('change', updatePurgePreview);
+});
+
+document.querySelectorAll('#purgeCamFilterTabs .filter-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#purgeCamFilterTabs .filter-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        updatePurgePreview();
+    });
+});
+
+// Cálculo y previsualización en vivo (Dry-Run)
+async function updatePurgePreview() {
+    if (!purgeCustomDaysInput || !previewCountVal || !previewSizeVal) return;
+    const days = Math.max(0, parseInt(purgeCustomDaysInput.value, 10) || 0);
+    const targetType = document.querySelector('input[name="purgeContentType"]:checked')?.value || 'all';
+    const activeCamBtn = document.querySelector('#purgeCamFilterTabs .filter-tab.active');
+    const targetCam = activeCamBtn ? activeCamBtn.dataset.purgeCam : 'all';
+
+    // Calcular fecha límite
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    const cutoffStr = d.toISOString().split('T')[0];
+    if (cutoffDateHintText) {
+        cutoffDateHintText.textContent = days === 0 
+            ? 'Se eliminarán grabaciones anteriores a hoy' 
+            : `Grabaciones anteriores al ${cutoffStr} (conserva hoy + ${days} días)`;
+    }
+
+    if (previewStatusBadge) previewStatusBadge.textContent = 'Simulando...';
+
+    try {
+        const res = await fetch('/api/media/purge-preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days_older_than: days, target_type: targetType, camera_id: targetCam })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (previewStatusBadge) previewStatusBadge.textContent = 'Listo';
+            previewCountVal.textContent = data.total_count;
+            const freedStr = data.freed_mb > 1024 ? `${data.freed_gb} GB` : `${data.freed_mb} MB`;
+            previewSizeVal.textContent = freedStr;
+
+            const datesStr = data.affected_days && data.affected_days.length > 0
+                ? `${data.affected_days.length} día(s) afectados (${data.affected_days[0]} a ${data.affected_days[data.affected_days.length - 1]})`
+                : 'No se encontraron grabaciones con esa antigüedad';
+
+            if (previewBreakdownText) {
+                previewBreakdownText.innerHTML = `
+                    <div>📅 <strong>${datesStr}</strong></div>
+                    <div style="margin-top: 0.25rem; font-size: 0.74rem; color: #94a3b8;">
+                        📼 ${data.breakdown.continuous_count} videos 24/7 (${data.breakdown.continuous_mb} MB) &bull; 
+                        🎬 ${data.breakdown.clip_count} clips IA (${data.breakdown.clip_mb} MB) &bull; 
+                        📸 ${data.breakdown.snapshot_count} fotos (${data.breakdown.snapshot_mb} MB)
+                    </div>
+                `;
+            }
+
+            if (executePurgeBtn) {
+                if (data.total_count > 0) {
+                    executePurgeBtn.disabled = false;
+                    executePurgeBtn.textContent = `🗑️ Confirmar Purga (${data.total_count} archivos | ${freedStr})`;
+                } else {
+                    executePurgeBtn.disabled = true;
+                    executePurgeBtn.textContent = 'Sin archivos para purgar';
+                }
+            }
+        }
+    } catch (e) {
+        if (previewStatusBadge) previewStatusBadge.textContent = 'Error';
+        if (previewBreakdownText) previewBreakdownText.textContent = `Error en simulación: ${e.message}`;
+    }
+}
+
+// Ejecución de la purga
+if (executePurgeBtn) {
+    executePurgeBtn.addEventListener('click', async () => {
+        const days = Math.max(0, parseInt(purgeCustomDaysInput.value, 10) || 0);
+        const targetType = document.querySelector('input[name="purgeContentType"]:checked')?.value || 'all';
+        const activeCamBtn = document.querySelector('#purgeCamFilterTabs .filter-tab.active');
+        const targetCam = activeCamBtn ? activeCamBtn.dataset.purgeCam : 'all';
+
+        const typeLabel = targetType === 'continuous' ? 'Solo Grabaciones 24/7' : (targetType === 'clip' ? 'Solo Clips de Eventos' : (targetType === 'snapshot' ? 'Solo Fotos' : 'Todo el contenido'));
+        const ok = confirm(`⚠️ ¿Confirmas la purga permanente de grabaciones con más de ${days} días?\n\nFiltro: ${typeLabel}\nCámara: ${targetCam === 'all' ? 'Ambas Cámaras' : targetCam}\n\nEsta acción liberará espacio de inmediato.`);
+        if (!ok) return;
+
+        try {
+            executePurgeBtn.disabled = true;
+            executePurgeBtn.textContent = '⏳ Liberando espacio en disco...';
+            const res = await fetch('/api/media/bulk-delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days_older_than: days, target_type: targetType, camera_id: targetCam })
+            });
+            const data = await res.json();
+            if (data.success) {
+                const freedStr = data.freed_mb > 1024 ? `${data.freed_gb} GB` : `${data.freed_mb} MB`;
+                closePurgeModal();
+                alert(`✨ Purgado completado exitosamente.\n\nArchivos eliminados: ${data.deleted_count}\nEspacio liberado: ${freedStr}`);
+                loadMediaItems();
+                loadStorageEstimate();
+            } else {
+                alert(`Error purgando archivos: ${data.error || 'Desconocido'}`);
+            }
+        } catch (e) {
+            alert(`Error al conectar con el servidor: ${e.message}`);
+        } finally {
+            executePurgeBtn.disabled = false;
+        }
+    });
+}
+
+// Cargar y Guardar Política de Retención
+async function loadRetentionSettings() {
+    try {
+        const res = await fetch('/api/settings/retention');
+        const data = await res.json();
+        if (retentionDaysInput) retentionDaysInput.value = data.max_recording_days || 30;
+        if (autoPurgeEnabledToggle) autoPurgeEnabledToggle.checked = data.auto_purge_enabled !== false;
+    } catch (e) {
+        console.error('Error cargando retención:', e);
+    }
+}
+
+if (saveRetentionBtn) {
+    saveRetentionBtn.addEventListener('click', async () => {
+        const days = parseInt(retentionDaysInput.value, 10) || 30;
+        const enabled = autoPurgeEnabledToggle ? autoPurgeEnabledToggle.checked : true;
+        try {
+            saveRetentionBtn.disabled = true;
+            saveRetentionBtn.textContent = '💾 Guardando...';
+            const res = await fetch('/api/settings/retention', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ max_recording_days: days, auto_purge_enabled: enabled })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(`✅ Política de retención guardada con éxito:\n\nEl sistema mantendrá grabaciones hasta un máximo de ${days} días.`);
+                closePurgeModal();
+            } else {
+                alert(`Error al guardar política: ${data.error || 'Desconocido'}`);
+            }
+        } catch (e) {
+            alert(`Error al conectar con el servidor: ${e.message}`);
+        } finally {
+            saveRetentionBtn.disabled = false;
+            saveRetentionBtn.textContent = '💾 Guardar Política de Retención';
         }
     });
 }
@@ -902,6 +1164,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dateFilterInput) {
         dateFilterInput.value = currentFilterDate;
     }
+    updateDatePurgeBtnState();
     loadStorageEstimate();
     loadMediaItems();
 });

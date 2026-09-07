@@ -7,7 +7,7 @@ import threading
 import subprocess
 from collections import deque
 from queue import Queue, Empty
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 import json
 
@@ -456,6 +456,18 @@ class Recorder:
                 'segment_minutes': self.segment_seconds // 60
             }
     
+    def set_max_days(self, days: int):
+        """Actualiza dinámicamente el límite de días de retención."""
+        self.max_days = max(1, int(days))
+        logger.info(f"Política de retención actualizada a {self.max_days} días ({self.output_dir})")
+
+    def _parse_dir_date(self, name: str):
+        """Parsea un nombre de directorio en formato YYYY-MM-DD a date."""
+        try:
+            return datetime.strptime(name, '%Y-%m-%d').date()
+        except Exception:
+            return None
+
     def _start_cleanup_thread(self):
         def cleanup_worker():
             while self.running:
@@ -468,26 +480,32 @@ class Recorder:
         t.start()
     
     def _run_cleanup_cycle(self):
-        cutoff = time.time() - (self.max_days * 86400)
-        for base in [self.continuous_dir, self.clips_dir]:
-            for date_dir in sorted(base.glob('*')):
-                if date_dir.is_dir():
-                    try:
-                        dir_date = datetime.strptime(date_dir.name, '%Y-%m-%d').timestamp()
-                        if dir_date < cutoff:
-                            shutil.rmtree(date_dir)
-                            logger.info(f"Grabaciones antiguas eliminadas: {date_dir.name}")
-                    except Exception:
-                        pass
+        """Ejecuta el ciclo de retención programado y chequeo de espacio crítico."""
+        try:
+            res = self.purge_older_than(self.max_days, target_type='all', dry_run=False)
+            if res.get('deleted_count', 0) > 0:
+                logger.info(f"Auto-limpieza ({self.max_days} días): {res['deleted_count']} archivos eliminados ({res['freed_mb']} MB) en {self.output_dir}")
+        except Exception as e:
+            logger.error(f"Error en auto-limpieza por retención ({self.max_days} días): {e}")
         
         try:
             _, _, free = shutil.disk_usage(str(self.output_dir))
             free_gb = free / (1024**3)
             if free_gb < 3.0:
                 logger.warning(f"Espacio libre crítico ({free_gb:.1f} GB). Purgando grabaciones más antiguas...")
-                existing_days = sorted(self.continuous_dir.glob('*'))
-                if existing_days:
-                    shutil.rmtree(existing_days[0])
+                all_date_dirs = []
+                for base in [self.continuous_dir, self.clips_dir]:
+                    if base.exists():
+                        for d in base.glob('*'):
+                            if d.is_dir():
+                                parsed = self._parse_dir_date(d.name)
+                                if parsed:
+                                    all_date_dirs.append((parsed, d))
+                if all_date_dirs:
+                    all_date_dirs.sort(key=lambda x: x[0])
+                    oldest_date, oldest_dir = all_date_dirs[0]
+                    logger.info(f"Purgando día más antiguo por espacio crítico: {oldest_dir}")
+                    shutil.rmtree(oldest_dir, ignore_errors=True)
         except Exception as e:
             logger.error(f"Error en verificación de espacio: {e}")
     
@@ -537,7 +555,6 @@ class Recorder:
     def delete_file(self, file_type: str, filename: str, day: str = None) -> bool:
         """Elimina de forma segura un archivo de clips, continuous o snapshots."""
         try:
-            # Validar nombre de archivo seguro
             safe_name = Path(filename).name
             target = None
             if file_type == 'snapshot':
@@ -546,7 +563,6 @@ class Recorder:
                 if day:
                     target = self.clips_dir / Path(day).name / safe_name
                 else:
-                    # Buscar en los subdirectorios de clips
                     found = list(self.clips_dir.glob(f"*/{safe_name}"))
                     if found:
                         target = found[0]
@@ -561,7 +577,6 @@ class Recorder:
             if target and target.is_file():
                 target.unlink()
                 logger.info(f"Archivo eliminado exitosamente: {target}")
-                # Limpiar carpeta de fecha si quedó vacía
                 if target.parent != self.snapshots_dir and not any(target.parent.iterdir()):
                     try:
                         target.parent.rmdir()
@@ -575,33 +590,168 @@ class Recorder:
             logger.error(f"Error eliminando archivo ({filename}): {e}")
             return False
 
-    def bulk_delete_older_than(self, days: int) -> int:
-        """Elimina grabaciones y clips con más de X días de antigüedad. Retorna cuántos se borraron."""
+    def purge_older_than(self, days: int, target_type: str = 'all', dry_run: bool = False) -> dict:
+        """
+        Purga archivos anteriores a X días de antigüedad con cálculo exacto por fecha de calendario.
+        Soporta modo simulación (dry_run=True) y filtro por tipo ('all', 'continuous', 'clip', 'snapshot').
+        """
+        days = max(0, int(days))
+        cutoff_date = date.today() - timedelta(days=days)
+        cutoff_ts = datetime.combine(cutoff_date, datetime.min.time()).timestamp()
+
         deleted_count = 0
-        cutoff = time.time() - (days * 86400)
-        try:
-            # Clips y continuos
-            for base in [self.continuous_dir, self.clips_dir]:
-                for date_dir in list(base.glob('*')):
-                    if date_dir.is_dir():
-                        try:
-                            dir_date = datetime.strptime(date_dir.name, '%Y-%m-%d').timestamp()
-                            if dir_date < cutoff:
-                                for f in date_dir.glob('*'):
-                                    if f.is_file():
-                                        f.unlink()
-                                        deleted_count += 1
-                                date_dir.rmdir()
-                        except Exception:
-                            pass
-            # Snapshots
+        freed_bytes = 0
+        affected_days = set()
+        breakdown = {
+            'continuous_count': 0, 'continuous_bytes': 0,
+            'clip_count': 0, 'clip_bytes': 0,
+            'snapshot_count': 0, 'snapshot_bytes': 0
+        }
+
+        # 1. Grabaciones Continuas 24/7
+        if target_type in ('all', 'continuous') and self.continuous_dir.exists():
+            for date_dir in list(self.continuous_dir.glob('*')):
+                if date_dir.is_dir():
+                    dir_d = self._parse_dir_date(date_dir.name)
+                    if dir_d and dir_d < cutoff_date:
+                        affected_days.add(date_dir.name)
+                        for f in date_dir.glob('**/*'):
+                            if f.is_file():
+                                sz = f.stat().st_size
+                                breakdown['continuous_count'] += 1
+                                breakdown['continuous_bytes'] += sz
+                                deleted_count += 1
+                                freed_bytes += sz
+                        if not dry_run:
+                            shutil.rmtree(date_dir, ignore_errors=True)
+
+        # 2. Clips de Eventos / Movimiento
+        if target_type in ('all', 'clip') and self.clips_dir.exists():
+            for date_dir in list(self.clips_dir.glob('*')):
+                if date_dir.is_dir():
+                    dir_d = self._parse_dir_date(date_dir.name)
+                    if dir_d and dir_d < cutoff_date:
+                        affected_days.add(date_dir.name)
+                        for f in date_dir.glob('**/*'):
+                            if f.is_file():
+                                sz = f.stat().st_size
+                                breakdown['clip_count'] += 1
+                                breakdown['clip_bytes'] += sz
+                                deleted_count += 1
+                                freed_bytes += sz
+                        if not dry_run:
+                            shutil.rmtree(date_dir, ignore_errors=True)
+
+        # 3. Snapshots / Fotos
+        if target_type in ('all', 'snapshot') and self.snapshots_dir.exists():
             for f in list(self.snapshots_dir.glob('*.jpg')):
-                if f.is_file() and f.stat().st_mtime < cutoff:
-                    f.unlink()
-                    deleted_count += 1
-        except Exception as e:
-            logger.error(f"Error en borrado masivo por días: {e}")
-        return deleted_count
+                if f.is_file():
+                    try:
+                        mtime = f.stat().st_mtime
+                        if mtime < cutoff_ts:
+                            sz = f.stat().st_size
+                            breakdown['snapshot_count'] += 1
+                            breakdown['snapshot_bytes'] += sz
+                            deleted_count += 1
+                            freed_bytes += sz
+                            f_day = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+                            affected_days.add(f_day)
+                            if not dry_run:
+                                f.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+        return {
+            'deleted_count': deleted_count,
+            'freed_bytes': freed_bytes,
+            'freed_mb': round(freed_bytes / (1024 * 1024), 2),
+            'freed_gb': round(freed_bytes / (1024**3), 3),
+            'affected_days': sorted(list(affected_days)),
+            'breakdown': breakdown,
+            'dry_run': dry_run,
+            'days': days,
+            'cutoff_date': cutoff_date.strftime('%Y-%m-%d'),
+            'target_type': target_type
+        }
+
+    def purge_specific_date(self, specific_date: str, target_type: str = 'all', dry_run: bool = False) -> dict:
+        """
+        Purga todas las grabaciones de un día exacto (YYYY-MM-DD).
+        """
+        safe_date = Path(specific_date).name
+        target_d = self._parse_dir_date(safe_date)
+        if not target_d:
+            return {'deleted_count': 0, 'freed_bytes': 0, 'freed_mb': 0, 'freed_gb': 0, 'affected_days': [], 'error': 'Fecha inválida'}
+
+        deleted_count = 0
+        freed_bytes = 0
+        breakdown = {
+            'continuous_count': 0, 'continuous_bytes': 0,
+            'clip_count': 0, 'clip_bytes': 0,
+            'snapshot_count': 0, 'snapshot_bytes': 0
+        }
+
+        # 1. Grabaciones Continuas 24/7
+        if target_type in ('all', 'continuous'):
+            cont_day_dir = self.continuous_dir / safe_date
+            if cont_day_dir.exists() and cont_day_dir.is_dir():
+                for f in cont_day_dir.glob('**/*'):
+                    if f.is_file():
+                        sz = f.stat().st_size
+                        breakdown['continuous_count'] += 1
+                        breakdown['continuous_bytes'] += sz
+                        deleted_count += 1
+                        freed_bytes += sz
+                if not dry_run:
+                    shutil.rmtree(cont_day_dir, ignore_errors=True)
+
+        # 2. Clips de Eventos
+        if target_type in ('all', 'clip'):
+            clip_day_dir = self.clips_dir / safe_date
+            if clip_day_dir.exists() and clip_day_dir.is_dir():
+                for f in clip_day_dir.glob('**/*'):
+                    if f.is_file():
+                        sz = f.stat().st_size
+                        breakdown['clip_count'] += 1
+                        breakdown['clip_bytes'] += sz
+                        deleted_count += 1
+                        freed_bytes += sz
+                if not dry_run:
+                    shutil.rmtree(clip_day_dir, ignore_errors=True)
+
+        # 3. Snapshots de esa fecha
+        if target_type in ('all', 'snapshot') and self.snapshots_dir.exists():
+            for f in list(self.snapshots_dir.glob('*.jpg')):
+                if f.is_file():
+                    try:
+                        f_day = datetime.fromtimestamp(f.stat().st_mtime).strftime('%Y-%m-%d')
+                        if f_day == safe_date:
+                            sz = f.stat().st_size
+                            breakdown['snapshot_count'] += 1
+                            breakdown['snapshot_bytes'] += sz
+                            deleted_count += 1
+                            freed_bytes += sz
+                            if not dry_run:
+                                f.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+        return {
+            'deleted_count': deleted_count,
+            'freed_bytes': freed_bytes,
+            'freed_mb': round(freed_bytes / (1024 * 1024), 2),
+            'freed_gb': round(freed_bytes / (1024**3), 3),
+            'affected_days': [safe_date] if deleted_count > 0 else [],
+            'breakdown': breakdown,
+            'dry_run': dry_run,
+            'specific_date': safe_date,
+            'target_type': target_type
+        }
+
+    def bulk_delete_older_than(self, days: int) -> int:
+        """Compatibilidad retroactiva: elimina grabaciones con más de X días."""
+        res = self.purge_older_than(days, target_type='all', dry_run=False)
+        return res.get('deleted_count', 0)
 
     def get_detailed_storage_metrics(self):
         """Calcula el tamaño de cada carpeta y la estimación de días restantes."""

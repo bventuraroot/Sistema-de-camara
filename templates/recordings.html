@@ -712,6 +712,182 @@
             background: rgba(255, 255, 255, 0.15);
             color: #fff;
         }
+
+        /* Estilos del Asistente de Purga Inteligente por Días */
+        .purge-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            padding: 1rem;
+        }
+
+        .purge-dialog {
+            position: relative;
+            z-index: 2;
+            width: 100%;
+            max-width: 620px;
+            background: #0f172a;
+            border: 1px solid rgba(245, 158, 11, 0.35);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.7), 0 0 25px rgba(245, 158, 11, 0.15);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            animation: modalFadeIn 0.2s ease-out;
+        }
+
+        .purge-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.1rem 1.4rem;
+            background: rgba(0, 0, 0, 0.35);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .purge-header-title {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #fbbf24;
+        }
+
+        .purge-tabs {
+            display: flex;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0.3rem 0.5rem;
+            gap: 0.4rem;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .purge-tab-btn {
+            flex: 1;
+            padding: 0.5rem 0.75rem;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .purge-tab-btn.active {
+            background: rgba(245, 158, 11, 0.15);
+            border-color: rgba(245, 158, 11, 0.4);
+            color: #fbbf24;
+        }
+
+        .purge-body {
+            padding: 1.25rem 1.4rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.1rem;
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+
+        .purge-section-title {
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+        }
+
+        .preset-chips-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(65px, 1fr));
+            gap: 0.4rem;
+        }
+
+        .preset-chip-btn {
+            padding: 0.45rem 0.4rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: var(--radius-sm);
+            color: var(--text-main);
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .preset-chip-btn:hover {
+            background: rgba(245, 158, 11, 0.12);
+            border-color: rgba(245, 158, 11, 0.35);
+            color: #fbbf24;
+        }
+
+        .preset-chip-btn.active {
+            background: #f59e0b;
+            border-color: #f59e0b;
+            color: #000;
+            font-weight: 700;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
+        }
+
+        .purge-preview-card {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(15, 23, 42, 0.8) 100%);
+            border: 1px solid rgba(245, 158, 11, 0.25);
+            border-radius: var(--radius-md);
+            padding: 1rem 1.1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+
+        .purge-preview-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+        }
+
+        .preview-metric-box {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius-sm);
+            padding: 0.65rem 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+
+        .preview-metric-box .label {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .preview-metric-box .val {
+            font-size: 1.25rem;
+            font-weight: 800;
+            font-family: var(--font-mono);
+            color: #fbbf24;
+        }
+
+        .purge-footer {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 1rem 1.4rem;
+            background: rgba(0, 0, 0, 0.35);
+            border-top: 1px solid var(--border-subtle);
+            gap: 0.75rem;
+        }
     </style>
 </head>
 <body>
@@ -855,6 +1031,7 @@
                     <label for="dateFilterInput" style="font-size: 0.82rem; color: var(--text-muted); font-weight: 600;">Calendario:</label>
                     <input type="date" id="dateFilterInput" style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.4rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.82rem;">
                     <button type="button" class="btn btn-xs btn-outline" id="clearDateFilterBtn">Limpiar</button>
+                    <button type="button" class="btn btn-xs btn-outline" id="purgeDateBtn" style="display: none; border-color: rgba(239, 68, 68, 0.6); color: #f87171; font-weight: 600;">🗑️ Purgar Día Filtrado</button>
                 </div>
             </div>
 
@@ -870,17 +1047,20 @@
                 </div>
 
                 <div class="bulk-btns-group">
+                    <button type="button" class="btn btn-xs" id="openPurgeModalBtn" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #000; font-weight: 700; border: none; box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);">
+                        🧹 Asistente de Purga por Días
+                    </button>
                     <button type="button" class="btn btn-xs btn-outline" id="purge7Btn" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">
-                        🧹 > 7 Días
+                        > 7 Días
                     </button>
                     <button type="button" class="btn btn-xs btn-outline" id="purge15Btn" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">
-                        🧹 > 15 Días
+                        > 15 Días
                     </button>
                     <button type="button" class="btn btn-xs btn-outline" id="purge30Btn" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">
-                        🧹 > 30 Días
+                        > 30 Días
                     </button>
-                    <button type="button" class="btn btn-xs btn-outline" id="purgeCustomBtn" style="border-color: rgba(245, 158, 11, 0.6); color: #f59e0b; font-weight: 700;">
-                        🧹 Purgar por Días...
+                    <button type="button" class="btn btn-xs btn-outline" id="openRetentionBtn" style="border-color: rgba(16, 185, 129, 0.4); color: #34d399;">
+                        ⚙️ Auto-Retención
                     </button>
                     <button type="button" class="btn btn-xs btn-outline" id="deleteSelectedBtn" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5;" disabled>
                         🗑️ Eliminar Seleccionados
@@ -979,6 +1159,132 @@
                     <a href="#" id="playerDownloadBtn" download class="btn btn-xs btn-primary">⬇️ Descargar</a>
                     <button type="button" class="btn btn-xs btn-outline" id="playerDeleteBtn" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5;">🗑️ Eliminar</button>
                 </div>
+            </div>
+        </div>
+    <!-- Modal Asistente de Purga Inteligente por Días -->
+    <div class="purge-modal" id="purgeModal" style="display: none;">
+        <div class="modal-backdrop" id="purgeModalBackdrop"></div>
+        <div class="purge-dialog">
+            <div class="purge-header">
+                <div class="purge-header-title">
+                    <span>🧹</span>
+                    <span>Asistente de Purga & Liberación de Espacio</span>
+                </div>
+                <button type="button" class="btn btn-xs btn-outline" id="closePurgeModalBtn">✕ Cerrar</button>
+            </div>
+
+            <div class="purge-tabs">
+                <button type="button" class="purge-tab-btn active" id="tabManualPurge">⚡ Purga Inmediata por Días</button>
+                <button type="button" class="purge-tab-btn" id="tabAutoRetention">⚙️ Política de Retención Automática</button>
+            </div>
+
+            <!-- Panel 1: Purga Manual Inmediata -->
+            <div class="purge-body" id="panelManualPurge">
+                <!-- Selector de Antigüedad -->
+                <div>
+                    <div class="purge-section-title">1. Antigüedad a Eliminar (Días)</div>
+                    <div class="preset-chips-grid">
+                        <button type="button" class="preset-chip-btn" data-days="1">1 día</button>
+                        <button type="button" class="preset-chip-btn" data-days="3">3 días</button>
+                        <button type="button" class="preset-chip-btn active" data-days="7">7 días</button>
+                        <button type="button" class="preset-chip-btn" data-days="15">15 días</button>
+                        <button type="button" class="preset-chip-btn" data-days="30">30 días</button>
+                        <button type="button" class="preset-chip-btn" data-days="60">60 días</button>
+                        <button type="button" class="preset-chip-btn" data-days="90">90 días</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.6rem;">
+                        <span style="font-size: 0.82rem; color: var(--text-muted);">O ingresa días exactos:</span>
+                        <input type="number" id="purgeCustomDaysInput" min="0" max="365" value="7" style="width: 80px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.35rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.85rem; font-family: var(--font-mono); text-align: center;">
+                        <span style="font-size: 0.8rem; color: #fbbf24;" id="cutoffDateHintText">Grabaciones anteriores al --</span>
+                    </div>
+                </div>
+
+                <!-- Selector de Tipo de Contenido -->
+                <div>
+                    <div class="purge-section-title">2. Tipo de Contenido a Purgar</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        <label style="display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; cursor: pointer; background: rgba(0,0,0,0.3); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06);">
+                            <input type="radio" name="purgeContentType" value="all" checked>
+                            <span>🗂️ Todo el contenido</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; cursor: pointer; background: rgba(0,0,0,0.3); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid rgba(245,158,11,0.25);" title="Recomendado: Libera el 95% del espacio manteniendo los clips de movimiento">
+                            <input type="radio" name="purgeContentType" value="continuous">
+                            <span style="color: #fbbf24;">📼 Solo 24/7 Continuo</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; cursor: pointer; background: rgba(0,0,0,0.3); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06);">
+                            <input type="radio" name="purgeContentType" value="clip">
+                            <span>🎬 Solo Clips de Eventos</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; cursor: pointer; background: rgba(0,0,0,0.3); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06);">
+                            <input type="radio" name="purgeContentType" value="snapshot">
+                            <span>📸 Solo Fotos / Capturas</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Selector de Cámara -->
+                <div>
+                    <div class="purge-section-title">3. Cámara Objetivo</div>
+                    <div class="filter-tabs" id="purgeCamFilterTabs" style="width: 100%; display: flex;">
+                        <button type="button" class="filter-tab active" data-purge-cam="all" style="flex: 1;">Ambas Cámaras</button>
+                        <button type="button" class="filter-tab" data-purge-cam="cam1" style="flex: 1;">📹 Cam 1: Tuya</button>
+                        <button type="button" class="filter-tab" data-purge-cam="cam2" style="flex: 1;">📹 Cam 2: iCam365</button>
+                    </div>
+                </div>
+
+                <!-- Previsualización en Vivo (Dry Run) -->
+                <div class="purge-preview-card">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <strong style="font-size: 0.85rem; color: #fbbf24;">📊 Simulación de Espacio a Liberar</strong>
+                        <span id="previewStatusBadge" style="font-size: 0.75rem; color: var(--text-muted);">Calculando...</span>
+                    </div>
+                    <div class="purge-preview-metrics">
+                        <div class="preview-metric-box">
+                            <span class="label">Archivos a Eliminar</span>
+                            <span class="val" id="previewCountVal">0</span>
+                        </div>
+                        <div class="preview-metric-box">
+                            <span class="label">Espacio Estimado a Liberar</span>
+                            <span class="val" id="previewSizeVal">0.0 MB</span>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.76rem; color: var(--text-muted); line-height: 1.4;" id="previewBreakdownText">
+                        Fechas afectadas: Calculando...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel 2: Política de Retención Automática -->
+            <div class="purge-body" id="panelAutoRetention" style="display: none;">
+                <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: var(--radius-md); padding: 1rem; color: #a7f3d0; font-size: 0.82rem; line-height: 1.5;">
+                    💡 <strong>Auto-Limpieza Continua:</strong> El servidor ejecutará una revisión periódica en segundo plano para purgar automáticamente cualquier grabación o foto que supere la cantidad de días configurada. Además, si el disco baja de 3 GB libres, purgará de emergencia los días más antiguos para evitar colapso.
+                </div>
+
+                <div>
+                    <div class="purge-section-title">Días Máximos de Grabación en Disco</div>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <input type="number" id="retentionDaysInput" min="1" max="365" value="30" style="width: 90px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.5rem; border-radius: var(--radius-sm); font-size: 0.95rem; font-family: var(--font-mono); text-align: center;">
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">días de retención automática</span>
+                    </div>
+                </div>
+
+                <div>
+                    <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--text-main);">
+                        <input type="checkbox" id="autoPurgeEnabledToggle" checked>
+                        <span>Activar ciclo automático cada hora</span>
+                    </label>
+                </div>
+
+                <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">
+                    <button type="button" class="btn btn-sm btn-primary" id="saveRetentionBtn">💾 Guardar Política de Retención</button>
+                </div>
+            </div>
+
+            <div class="purge-footer" id="purgeFooterControls">
+                <button type="button" class="btn btn-xs btn-outline" id="cancelPurgeBtn">Cancelar</button>
+                <button type="button" class="btn btn-xs" id="executePurgeBtn" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: #fff; font-weight: 700; border: none; padding: 0.45rem 1rem; box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);">
+                    🗑️ Confirmar y Purgar
+                </button>
             </div>
         </div>
     </div>

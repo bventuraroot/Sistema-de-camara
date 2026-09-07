@@ -4,7 +4,7 @@
   "confidence_threshold": 0.65,
   "ai_motion_only": false,
   "motion_detection": true,
-  "object_detection": false,
+  "object_detection": true,
   "continuous_recording": true,
   "auto_tracking": true,
   "cameras": {
@@ -15,11 +15,11 @@
       "fallback_url": null,
       "ptz": true,
       "motion_detection": true,
-      "event_recording": true,
+      "event_recording": false,
       "auto_tracking": true,
-      "continuous_recording": false,
-      "ai_filter": false,
-      "motion_threshold": 11000,
+      "continuous_recording": true,
+      "ai_filter": true,
+      "motion_threshold": 4000,
       "home_return_delay": 15.0
     },
     "cam2": {
@@ -28,11 +28,11 @@
       "rtsp_url": "rtsp://admin:admin@192.168.1.18:554/live/ch0",
       "ptz": true,
       "motion_detection": false,
-      "event_recording": true,
-      "auto_tracking": false,
+      "event_recording": false,
+      "auto_tracking": true,
       "continuous_recording": true,
       "ai_filter": false,
-      "motion_threshold": 10000,
+      "motion_threshold": 6250,
       "home_return_delay": 15.0
     }
   },
@@ -56,5 +56,7 @@
   },
   "cam2_ptz_password": "admin",
   "cam2_ptz_user": "admin",
-  "system_profile": "auto"
+  "system_profile": "auto",
+  "max_recording_days": 45,
+  "auto_purge_enabled": true
 }
