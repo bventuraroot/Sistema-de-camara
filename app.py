@@ -4,6 +4,7 @@ import time
 import socket
 import re
 import cv2
+import numpy as np
 import json
 import threading
 import shutil
@@ -97,7 +98,7 @@ def get_all_settings():
             'cam2': {
                 'id': 'cam2',
                 'name': 'Cámara 2 (iCam365)',
-                'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://192.168.1.26:554/live/ch0'),
+                'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch1'),
                 'ptz': True,
                 'home_return_delay': 8.0
             }
@@ -186,7 +187,7 @@ cameras = {
     'cam2': {
         'id': 'cam2',
         'name': 'Cámara 2 (iCam365)',
-        'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://192.168.1.26:554/live/ch0'),
+        'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch1'),
         'has_ptz': False,
         'stream': None,
         'motion': None,
@@ -235,9 +236,9 @@ def broadcast_event(event_data):
             if q in event_queues:
                 event_queues.remove(q)
 
-def is_motion_capture_allowed(camera_id='cam1'):
+def is_motion_capture_allowed(item_type='clip', camera_id='cam1'):
     """
-    Determina si en este momento está permitido tomar capturas y generar clips/alertas
+    Determina si en este momento está permitido tomar capturas o generar clips/alertas
     por movimiento según la programación horaria configurada por el usuario.
     Retorna (allowed: bool, reason: str).
     """
@@ -251,6 +252,15 @@ def is_motion_capture_allowed(camera_id='cam1'):
     target_cams = sched.get('target_cameras', ['cam1', 'cam2'])
     if camera_id not in target_cams:
         return True, "Cámara no restringida"
+    
+    # Verificar si el horario aplica al tipo específico de contenido
+    apply_to_clips = sched.get('apply_to_clips', True)
+    apply_to_snaps = sched.get('apply_to_snapshots', True)
+    
+    if item_type == 'clip' and not apply_to_clips:
+        return True, "Clips 24/7 (Sin restricción)"
+    if item_type in ('snapshot', 'photo', 'snap') and not apply_to_snaps:
+        return True, "Fotos 24/7 (Sin restricción)"
     
     now = datetime.now()
     cur_time = now.strftime('%H:%M')
@@ -293,11 +303,6 @@ def camera_ai_worker(cid):
             if frame is None:
                 time.sleep(0.03)
                 continue
-            
-            # Mantener pre-buffer de 2s y alimentar frames si hay un clip de evento activo
-            rec = cam.get('recorder')
-            if rec:
-                rec.feed_frame(frame)
             
             # 1. Detección de movimiento
             motion_det = cam['motion']
@@ -349,20 +354,21 @@ def camera_ai_worker(cid):
                     cam['_last_target_seen_time'] = now_t
                     active_ptz.track_target(frame.shape, track_bbox, label=track_label)
             
-            # 4. Grabación de videoclips por evento (si está activa para esta cámara)
+            # 4. Grabación de videoclips por evento (si está activa para esta cámara y permitida por horario)
             rec = cam['recorder']
             active_label = 'movimiento'
             valid_dets = [d for d in detections if d['class'] in ALLOWED_TARGET_CLASSES]
             if valid_dets:
                 active_label = valid_dets[0]['class']
             cam_event_rec_enabled = cam.get('event_recording', True)
-            if cam_event_rec_enabled and (motion_detected or valid_dets) and rec:
+            clip_allowed_by_sched, _ = is_motion_capture_allowed('clip', cid)
+            if cam_event_rec_enabled and (motion_detected or valid_dets) and rec and clip_allowed_by_sched:
                 rec.trigger_event_clip(label=active_label)
             
-            # 5. Gestión de alertas y capturas fotográficas (las fotos JPG se rigen por el horario para no llenar el disco)
+            # 5. Gestión de alertas y capturas fotográficas (fotos y clips se rigen por horario para no llenar el disco)
             now = time.time()
             can_alert = (now - cam['last_alert_time']) >= ALERT_COOLDOWN
-            photo_allowed_by_sched, sched_msg = is_motion_capture_allowed(cid)
+            photo_allowed_by_sched, sched_msg = is_motion_capture_allowed('snapshot', cid)
             
             has_ai_target = bool(valid_dets)
             has_motion = bool(motion_detected and motion_det and motion_det.is_active())
@@ -383,9 +389,9 @@ def camera_ai_worker(cid):
                     
                     if primary:
                         cam['last_alert_time'] = now
-                        # Solo guardar foto JPG si está dentro del horario de capturas permitido
+                        # Solo guardar foto JPG o clip si está dentro del horario permitido
                         snap_name = rec.save_snapshot(frame, prefix=f"{cid}_{primary['class']}") if (rec and photo_allowed_by_sched) else None
-                        clip_url = rec.trigger_event_clip(label=primary['class']) if rec else None
+                        clip_url = rec.trigger_event_clip(label=primary['class']) if (rec and clip_allowed_by_sched) else None
                         
                         if snap_name:
                             logger.info(f"📸 Foto guardada [{cam['name']}]: {snap_name} ({primary['label']} - {int(primary['confidence'] * 100)}%)")
@@ -412,7 +418,7 @@ def camera_ai_worker(cid):
                     if not has_animal:
                         cam['last_alert_time'] = now
                         snap_name = rec.save_snapshot(frame, prefix=f"{cid}_movimiento") if (rec and photo_allowed_by_sched) else None
-                        clip_url = rec.trigger_event_clip(label='movimiento') if rec else None
+                        clip_url = rec.trigger_event_clip(label='movimiento') if (rec and clip_allowed_by_sched) else None
                         
                         if snap_name:
                             logger.info(f"📸 Foto guardada [{cam['name']}]: {snap_name} (Movimiento)")
@@ -455,21 +461,37 @@ def camera_ai_worker(cid):
             time.sleep(0.5)
 
 def camera_recording_feeder(cid):
-    """Alimenta la grabación continua 24/7 de cada cámara."""
+    """Alimenta la grabación continua 24/7 y buffer de eventos de cada cámara calibrado a 15 FPS."""
     cam = cameras[cid]
-    logger.info(f"Hilo de grabación continua 24/7 iniciado para {cam['name']}")
+    logger.info(f"Hilo de grabación y eventos iniciado para {cam['name']}")
+    last_fid = -1
     while ai_worker_running:
         try:
-            stream = cam['stream']
-            rec = cam['recorder']
-            if stream and stream.is_connected() and rec and rec.is_continuous_active() and cam.get('continuous_recording', True):
+            stream = cam.get('stream')
+            rec = cam.get('recorder')
+            if not stream or not stream.is_connected() or not rec:
+                time.sleep(0.25)
+                continue
+            
+            is_cont = rec.is_continuous_active() and cam.get('continuous_recording', True)
+            is_event = (rec.active_clip is not None)
+            
+            if is_cont or is_event:
+                frame, frame_id = stream.read_with_count()
+                if frame is not None and frame_id != last_fid:
+                    last_fid = frame_id
+                    rec.feed_frame(frame)
+                time.sleep(0.06)  # ~15-16 FPS máximo, coincidiendo con la tasa del encoder (self.fps = 15.0)
+            else:
+                # Si no hay grabación continua ni evento, mantener el pre-buffer circular liviano (~4 FPS)
                 frame = stream.read()
                 if frame is not None:
-                    rec.feed_frame(frame)
-            time.sleep(0.06)
+                    with rec.pre_buffer_lock:
+                        rec.pre_buffer.append(frame)
+                time.sleep(0.25)
         except Exception as e:
             logger.error(f"Error en feeder ({cid}): {e}")
-            time.sleep(1)
+            time.sleep(0.5)
 
 def init_components():
     global object_detector, alert_system, ptz_controller, icam_ptz, system_profiler
@@ -544,7 +566,24 @@ def init_components():
     ptz_controller = PTZController(bridge_url=bridge_url, device_id=device_id, active=auto_track)
     
     # 4. Controlador PTZ para Cámara 2 (iCam365 ONVIF Profile S)
-    icam_ptz = ICam365PTZController(ip='192.168.1.26', port=80)
+    cam2_rtsp = saved_cams.get('cam2', {}).get('rtsp_url') or cameras.get('cam2', {}).get('rtsp_url') or ''
+    ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', cam2_rtsp)
+    cam2_ip = ip_match.group(1) if ip_match else '192.168.1.18'
+    cam2_user = settings.get('cam2_ptz_user', 'admin')
+    cam2_pwd = settings.get('cam2_ptz_password', 'admin')
+
+    def get_cam2_live_ip():
+        c_rtsp = cameras.get('cam2', {}).get('rtsp_url') or ''
+        m = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', c_rtsp)
+        return m.group(1) if m else '192.168.1.18'
+
+    icam_ptz = ICam365PTZController(
+        ip=cam2_ip,
+        port=80,
+        username=cam2_user,
+        password=cam2_pwd,
+        ip_getter=get_cam2_live_ip
+    )
     cameras['cam2']['has_ptz'] = True
 
     # Cargar demoras de retorno al Punto Central por cámara
@@ -567,33 +606,43 @@ def init_components():
 
 def generate_frames(camera_id='cam1', quality_mode='efficient'):
     """
-    Genera el flujo de cuadros MJPEG en tiempo real, fluido y con baja latencia.
-    Elimina retrasos artificiales para que el video responda con la máxima fluidez de la cámara.
+    Genera el flujo de cuadros MJPEG en tiempo real, ultra fluido y con latencia cercana a cero.
     """
     cam = cameras.get(camera_id, cameras['cam1'])
     stream = cam['stream']
     motion_det = cam['motion']
     
-    # Configuración de resolución y compresión optimizada
+    # Configuración de resolución y compresión optimizada (Alta nitidez y fluidez)
     if quality_mode == 'mobile':
-        target_size = (854, 480)
-        jpeg_q = 75
+        target_size = (640, 360)
+        jpeg_q = 55
     elif quality_mode == 'balanced':
-        target_size = (1600, 900)
-        jpeg_q = 85
-    elif quality_mode == 'original':
-        target_size = None
-        jpeg_q = 88
-    else:  # 'efficient' (predeterminado para PC, laptop y red local)
         target_size = (1280, 720)
+        jpeg_q = 72
+    elif quality_mode == 'original':
+        target_size = (1920, 1080)
         jpeg_q = 80
+    else:  # 'efficient' (predeterminado para PC/Laptop: 960x540 nítido, ultra fluido y balanceado)
+        target_size = (960, 540)
+        jpeg_q = 68
     
     last_frame_id = -1
     
     try:
         while True:
             if stream is None or not stream.is_connected():
-                time.sleep(0.05)
+                # Enviar frame de reconexión elegante para que la conexión HTTP inicie de inmediato
+                placeholder = np.zeros((360, 640, 3), dtype=np.uint8)
+                placeholder[:] = (18, 24, 38)
+                cv2.putText(placeholder, f"Conectando a {cam['name']}...", (140, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (148, 163, 184), 2, cv2.LINE_AA)
+                ret, pbuf = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 60, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
+                if ret:
+                    pbytes = pbuf.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(pbytes)).encode() + b'\r\n\r\n' +
+                           pbytes + b'\r\n')
+                time.sleep(0.3)
                 continue
             
             frame, frame_id = stream.read_with_count()
@@ -603,39 +652,45 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
             
             # Solo enviar si la cámara ha producido un cuadro nuevo (evita desperdicio de red)
             if frame_id == last_frame_id:
-                time.sleep(0.005)
+                time.sleep(0.003)
                 continue
             
             last_frame_id = frame_id
             
             # Reutilizar fotograma JPEG ya codificado si otro cliente o vista lo procesó
             cached_bytes = None
+            dets = None
+            mboxes = None
             with cam['lock']:
                 if cam.get('_last_jpeg_fid') == frame_id and quality_mode in cam.get('_last_jpeg_cache', {}):
                     cached_bytes = cam['_last_jpeg_cache'][quality_mode]
+                else:
+                    dets = cam.get('cached_detections')
+                    mboxes = cam.get('cached_motion_boxes')
             
             if cached_bytes is not None:
                 frame_bytes = cached_bytes
             else:
-                display_frame = frame
-                with cam['lock']:
-                    dets = list(cam['cached_detections'])
-                    mboxes = list(cam['cached_motion_boxes'])
+                has_motion_draw = bool(motion_det and motion_det.is_active() and mboxes)
+                has_ai_draw = bool(object_detector and object_detector.is_active() and dets)
                 
-                if motion_det and motion_det.is_active() and mboxes:
-                    display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
+                # Solo clonar la matriz en memoria si hay que pintar cajas de detección
+                if has_motion_draw or has_ai_draw:
+                    display_frame = frame.copy()
+                    if has_motion_draw:
+                        display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
+                    if has_ai_draw:
+                        display_frame = object_detector.draw_detections(display_frame, dets)
+                else:
+                    display_frame = frame
                 
-                if object_detector and object_detector.is_active() and dets:
-                    display_frame = object_detector.draw_detections(display_frame, dets)
-                
-                # Reducción inteligente: SOLO reducir si el fotograma nativo excede target_size.
-                # NUNCA escalar hacia arriba para evitar distorsión, borrosidad y pixelado ("se ve feo").
+                # Reducción ultra-rápida (INTER_LINEAR: 2ms vs 12ms de INTER_AREA)
                 if target_size:
                     cur_h, cur_w = display_frame.shape[:2]
                     if cur_w > target_size[0] or cur_h > target_size[1]:
-                        display_frame = cv2.resize(display_frame, target_size, interpolation=cv2.INTER_AREA)
+                        display_frame = cv2.resize(display_frame, target_size, interpolation=cv2.INTER_LINEAR)
                 
-                ret, buffer = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_q])
+                ret, buffer = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_q, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
                 if not ret:
                     continue
                 
@@ -648,10 +703,11 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
             
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n'
+                   b'X-Frame-ID: ' + str(frame_id).encode() + b'\r\n'
                    b'Content-Length: ' + str(len(frame_bytes)).encode() + b'\r\n\r\n' +
                    frame_bytes + b'\r\n')
             
-            time.sleep(0.002)
+            time.sleep(0.001)
     except GeneratorExit:
         pass
     except Exception as e:
@@ -697,6 +753,14 @@ def camera_live_frame(camera_id):
     if frame is None or frame.size == 0:
         return ('', 204)
 
+    since_fid = request.args.get('since_fid', None)
+    if since_fid is not None:
+        try:
+            if int(since_fid) == frame_id:
+                return ('', 304)
+        except ValueError:
+            pass
+
     quality = request.args.get('quality', 'mobile').lower()
     if quality not in ('mobile', 'efficient', 'balanced', 'original'):
         quality = 'mobile'
@@ -705,25 +769,44 @@ def camera_live_frame(camera_id):
         if cam.get('_last_jpeg_fid') == frame_id and quality in cam.get('_last_jpeg_cache', {}):
             frame_bytes = cam['_last_jpeg_cache'][quality]
         else:
-            display_frame = frame
             dets = list(cam.get('cached_detections', []))
             mboxes = list(cam.get('cached_motion_boxes', []))
             motion_det = cam.get('motion')
-            if motion_det and motion_det.is_active() and mboxes:
-                display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
-            if object_detector and object_detector.is_active() and dets:
-                display_frame = object_detector.draw_detections(display_frame, dets)
+            
+            has_motion_draw = bool(motion_det and motion_det.is_active() and mboxes)
+            has_ai_draw = bool(object_detector and object_detector.is_active() and dets)
+            
+            if has_motion_draw or has_ai_draw:
+                display_frame = frame.copy()
+                if has_motion_draw:
+                    display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
+                if has_ai_draw:
+                    display_frame = object_detector.draw_detections(display_frame, dets)
+            else:
+                display_frame = frame
 
-            target_sz = (854, 480) if quality == 'mobile' else ((1280, 720) if quality == 'efficient' else None)
+            if quality == 'mobile':
+                target_sz = (640, 360)
+                q_val = 60
+            elif quality == 'efficient':
+                target_sz = (960, 540)
+                q_val = 68
+            elif quality == 'balanced':
+                target_sz = (1280, 720)
+                q_val = 72
+            else:
+                target_sz = None
+                q_val = 80
+
             if target_sz:
                 cur_h, cur_w = display_frame.shape[:2]
                 if cur_w > target_sz[0] or cur_h > target_sz[1]:
-                    display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_AREA)
+                    display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_LINEAR)
 
-            q_val = 75 if quality == 'mobile' else (80 if quality == 'efficient' else 85)
             ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, q_val, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
             if not ret:
                 return ('', 500)
+
             frame_bytes = buf.tobytes()
             if cam.get('_last_jpeg_fid') != frame_id:
                 cam['_last_jpeg_fid'] = frame_id
@@ -737,7 +820,8 @@ def camera_live_frame(camera_id):
             'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
             'Pragma': 'no-cache',
             'Expires': '0',
-            'X-Frame-ID': str(frame_id)
+            'X-Frame-ID': str(frame_id),
+            'Access-Control-Expose-Headers': 'X-Frame-ID'
         }
     )
 
@@ -866,10 +950,9 @@ def scanner_apply_camera(cid=None):
     ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', new_rtsp)
     extracted_ip = ip_match.group(1) if ip_match else 'desconocida'
 
-    # Si es cam2 y tiene controlador PTZ iCam365, actualizar la IP destino del PTZ
     if target_cid == 'cam2' and icam_ptz and ip_match:
         try:
-            icam_ptz.ip = extracted_ip
+            icam_ptz.update_ip(extracted_ip)
             logger.info(f"IP de PTZ iCam365 actualizada a {extracted_ip}")
         except Exception as e:
             logger.warning(f"No se pudo actualizar IP en icam_ptz: {e}")
@@ -1027,8 +1110,10 @@ def status():
             'end_time': settings.get('motion_schedule', {}).get('end_time', '06:00'),
             'days': settings.get('motion_schedule', {}).get('days', [0, 1, 2, 3, 4, 5, 6]),
             'target_cameras': settings.get('motion_schedule', {}).get('target_cameras', ['cam1', 'cam2']),
-            'is_active_now': is_motion_capture_allowed('cam1')[0],
-            'status_message': is_motion_capture_allowed('cam1')[1]
+            'apply_to_clips': settings.get('motion_schedule', {}).get('apply_to_clips', True),
+            'apply_to_snapshots': settings.get('motion_schedule', {}).get('apply_to_snapshots', True),
+            'is_active_now': is_motion_capture_allowed('clip', 'cam1')[0],
+            'status_message': is_motion_capture_allowed('clip', 'cam1')[1]
         },
         'storage': storage,
         'system_profile': system_profiler.get_summary() if system_profiler else SystemProfiler().get_summary(),
@@ -1051,6 +1136,10 @@ def schedule_route():
             sched['days'] = list(data['days'])
         if 'target_cameras' in data:
             sched['target_cameras'] = list(data['target_cameras'])
+        if 'apply_to_clips' in data:
+            sched['apply_to_clips'] = bool(data['apply_to_clips'])
+        if 'apply_to_snapshots' in data:
+            sched['apply_to_snapshots'] = bool(data['apply_to_snapshots'])
         
         save_setting('motion_schedule', sched)
         logger.info(f"Programación de horarios actualizada: {sched}")
@@ -1060,9 +1149,11 @@ def schedule_route():
         'start_time': '22:00',
         'end_time': '06:00',
         'days': [0, 1, 2, 3, 4, 5, 6],
-        'target_cameras': ['cam1', 'cam2']
+        'target_cameras': ['cam1', 'cam2'],
+        'apply_to_clips': True,
+        'apply_to_snapshots': True
     })
-    sched_allowed, sched_reason = is_motion_capture_allowed('cam1')
+    sched_allowed, sched_reason = is_motion_capture_allowed('clip', 'cam1')
     return jsonify({
         'success': True,
         'schedule': sched,
@@ -1693,6 +1784,59 @@ def get_all_media():
     # Ordenar por fecha y hora descendente
     media_list.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
     return jsonify(media_list)
+
+@app.route('/api/media/calendar-summary')
+def media_calendar_summary():
+    """Retorna un mapa consolidado de todas las fechas con grabaciones y estadísticas para el calendario."""
+    filter_cam = request.args.get('camera_id', 'all')
+    combined_days = {}
+
+    for cid, c in cameras.items():
+        if filter_cam != 'all' and filter_cam != cid:
+            continue
+        rec = c.get('recorder')
+        if not rec:
+            continue
+
+        c_days = rec.get_recorded_days_summary()
+        for d_str, stats in c_days.items():
+            if d_str not in combined_days:
+                combined_days[d_str] = {
+                    'date': d_str,
+                    'clips': 0,
+                    'continuous': 0,
+                    'snapshots': 0,
+                    'total_files': 0,
+                    'total_bytes': 0,
+                    'total_mb': 0.0,
+                    'total_gb': 0.0,
+                    'has_clips': False,
+                    'has_continuous': False,
+                    'has_snapshots': False,
+                    'cameras': []
+                }
+            cd = combined_days[d_str]
+            cd['clips'] += stats.get('clips', 0)
+            cd['continuous'] += stats.get('continuous', 0)
+            cd['snapshots'] += stats.get('snapshots', 0)
+            cd['total_files'] += stats.get('total_files', 0)
+            cd['total_bytes'] += stats.get('total_bytes', 0)
+            if stats.get('clips', 0) > 0: cd['has_clips'] = True
+            if stats.get('continuous', 0) > 0: cd['has_continuous'] = True
+            if stats.get('snapshots', 0) > 0: cd['has_snapshots'] = True
+            if cid not in cd['cameras']: cd['cameras'].append(cid)
+
+    for d_str, cd in combined_days.items():
+        cd['total_mb'] = round(cd['total_bytes'] / (1024 * 1024), 2)
+        cd['total_gb'] = round(cd['total_bytes'] / (1024**3), 3)
+
+    sorted_days = sorted(combined_days.keys(), reverse=True)
+    return jsonify({
+        'success': True,
+        'days_count': len(sorted_days),
+        'days_list': sorted_days,
+        'recorded_days': combined_days
+    })
 
 # Caché en memoria para /api/storage/estimate (evita recorrer cientos de archivos en cada petición)
 _storage_estimate_cache = {'data': None, 'timestamp': 0}

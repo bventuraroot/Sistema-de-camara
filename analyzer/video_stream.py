@@ -8,22 +8,8 @@ from collections import deque
 
 logger = logging.getLogger(__name__)
 
-# Configuración robusta para decodificación RTSP sobre TCP y soporte H.264/H.265
-# - rtsp_transport;tcp: evita pérdida de paquetes UDP por Wi-Fi
-# - fflags;nobuffer+discardcorrupt: descarta paquetes dañados para evitar cuadros grises/rotos
-# - reorder_queue_size;10: tolera jitter y paquetes fuera de orden sin corromper fotogramas
-# - buffer_size;1048576: buffer TCP de 1MB para estabilidad
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp|"
-    "timeout;5000000|"
-    "fflags;nobuffer+discardcorrupt|"
-    "flags;low_delay|"
-    "reorder_queue_size;10|"
-    "buffer_size;1048576|"
-    "max_delay;500000|"
-    "analyzeduration;1000000|"
-    "probesize;1000000"
-)
+# Configuración nativa y limpia para RTSP sobre TCP (soporte óptimo H.264 y HEVC/H.265 sin pantalla gris)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
 
 class VideoStream:
@@ -35,339 +21,136 @@ class VideoStream:
         self.frame = None
         self.connected = False
         self.lock = threading.Lock()
-        self._cap_lock = threading.Lock()
-        self._worker_thread = None
         self.cap = None
-        self.width = 1920
-        self.height = 1080
+        self.width = 1280
+        self.height = 720
         self.fps = 0.0
         self.frame_count = 0
         self.last_frame_time = 0
         self._fps_timestamps = deque(maxlen=30)
         self.running = True
-        # Contador de fallos consecutivos en la URL actual para decidir fallback
-        self._consecutive_connect_failures = 0
-        # Tiempo del último intento de recuperar la URL primaria
-        self._last_primary_probe = 0
-        # Intervalo entre sondeos de recuperación de la URL primaria (segundos)
-        self._primary_probe_interval = 120
-        self._request_switch_primary = False
-        self._probe_in_progress = False
-        self._last_bridge_restart_attempt = 0
+        self._worker_thread = None
         self._start_stream()
-
-    def _check_and_heal_tuya_bridge(self):
-        """Si el stream local de Tuya (puerto 8554) falla o se congela, solicita el reinicio del motor RTSP en :8787."""
-        if '8554' not in str(self.rtsp_url) and '8554' not in str(self.primary_url):
-            return
-        now = time.time()
-        if now - getattr(self, '_last_bridge_restart_attempt', 0) < 40:
-            return
-        self._last_bridge_restart_attempt = now
-        
-        def do_restart():
-            try:
-                import urllib.request
-                logger.warning("🔄 [Watchdog Tuya] Stream RTSP en :8554 inaccesible. Solicitando autorrecuperación a http://127.0.0.1:8787/api/restart/rtsp...")
-                req = urllib.request.Request("http://127.0.0.1:8787/api/restart/rtsp", data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    logger.info(f"✅ [Watchdog Tuya] Motor RTSP Tuya reiniciado con éxito (HTTP {resp.status}).")
-            except Exception as e:
-                logger.debug(f"[Watchdog Tuya] No se pudo comunicar con API Tuya Bridge (:8787): {e}")
-                
-        threading.Thread(target=do_restart, daemon=True, name="tuya-rtsp-autoheal").start()
-    
-    def _try_open_capture(self, url):
-        """Intenta abrir una captura RTSP. Retorna True si el stream se abrió y entrega al menos 1 frame."""
-        try:
-            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if not cap.isOpened():
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-                return None
-            
-            # Verificar que realmente entrega frames (evitar streams fantasma con width=0)
-            # En cámaras en la nube (Tuya/go2rtc), la negociación WebRTC y el primer I-frame pueden tardar 4-6s.
-            deadline = time.time() + 10.0
-            while time.time() < deadline:
-                ret = cap.grab()
-                if ret:
-                    w_prop = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h_prop = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    if w_prop > 0 and h_prop > 0:
-                        ret2, test_frame = cap.retrieve()
-                        if ret2 and test_frame is not None and getattr(test_frame, 'size', 0) > 0:
-                            h, w = test_frame.shape[:2]
-                            if w > 0 and h > 0:
-                                return cap
-                time.sleep(0.1)
-            
-            # No entregó frames válidos
-            try:
-                cap.release()
-            except Exception:
-                pass
-            return None
-        except Exception:
-            return None
 
     def _start_stream(self):
         def stream_worker():
             while self.running:
                 try:
-                    current_url = self.rtsp_url
-                    logger.info(f"Conectando a RTSP: {current_url}" +
-                                (" [FALLBACK SD]" if self.using_fallback else ""))
+                    logger.info(f"Conectando a RTSP: {self.rtsp_url}")
                     
-                    cap = self._try_open_capture(current_url)
-                    
-                    if cap is None:
-                        self._consecutive_connect_failures += 1
-                        logger.warning(
-                            f"No se pudo conectar al stream RTSP ({current_url}). "
-                            f"Fallo #{self._consecutive_connect_failures}. Reintentando..."
-                        )
-                        
-                        # Disparar autoreparación del bridge si aplica
-                        if self._consecutive_connect_failures >= 2:
-                            self._check_and_heal_tuya_bridge()
-                        
-                        # Si hay fallback y ya fallamos 2+ veces en la URL primaria, conmutar
-                        if (self.fallback_url and
-                                not self.using_fallback and
-                                self._consecutive_connect_failures >= 2):
-                            logger.warning(
-                                f"⚠️ Conmutando a stream de respaldo (SD): {self.fallback_url}"
-                            )
-                            self.rtsp_url = self.fallback_url
-                            self.using_fallback = True
-                            self._consecutive_connect_failures = 0
-                            self._last_primary_probe = time.time()
-                        
+                    self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                    if not self.cap.isOpened():
+                        logger.warning(f"No se pudo conectar al stream RTSP ({self.rtsp_url}). Reintentando en 2s...")
                         with self.lock:
                             self.connected = False
                             self.fps = 0.0
                         time.sleep(2)
                         continue
-                    
-                    # Conexión exitosa protegida por cerrojo
-                    with self._cap_lock:
-                        self.cap = cap
-                    self._consecutive_connect_failures = 0
-                    logger.info(
-                        f"Conexión RTSP establecida exitosamente" +
-                        (" [SD/Fallback]" if self.using_fallback else " [HD/Primaria]") + "."
-                    )
+
+                    logger.info(f"✅ Conexión RTSP establecida exitosamente: {self.rtsp_url}")
                     with self.lock:
                         self.connected = True
                     self.last_frame_time = time.time()
-                    
-                    consecutive_identical_frames = 0
-                    last_frame_sample = None
-                    
-                    while self.running and self.connected:
-                        # Grab bajo cerrojo seguro
-                        with self._cap_lock:
-                            if not self.cap or not self.running:
-                                break
-                            ret = self.cap.grab()
-                        
+
+                    while self.running and self.connected and self.cap:
+                        ret = self.cap.grab()
                         if not ret:
-                            if time.time() - self.last_frame_time > 6.0:
-                                logger.warning(f"Pérdida de señal RTSP (timeout de 6s en grab) para {current_url}, reconectando...")
+                            if time.time() - self.last_frame_time > 15.0:
+                                logger.warning(f"Pérdida de señal RTSP (timeout de 15s en grab): {self.rtsp_url}")
                                 break
-                            time.sleep(0.02)
+                            time.sleep(0.01)
                             continue
-                        
-                        # Retrieve bajo cerrojo seguro
-                        with self._cap_lock:
-                            if not self.cap or not self.running:
-                                break
-                            ret, frame = self.cap.retrieve()
-                        
+
+                        ret, frame = self.cap.retrieve()
                         if not ret or frame is None or getattr(frame, 'size', 0) == 0:
-                            if time.time() - self.last_frame_time > 6.0:
-                                logger.warning(f"Fallo al recuperar frame RTSP (timeout de 6s en retrieve) para {current_url}, reconectando...")
+                            if time.time() - self.last_frame_time > 15.0:
+                                logger.warning(f"Fallo al recuperar frame RTSP (timeout de 15s en retrieve): {self.rtsp_url}")
                                 break
-                            time.sleep(0.02)
+                            time.sleep(0.01)
                             continue
-                        
+
                         now = time.time()
-                        h, w = frame.shape[:2]
-                        
-                        # Detector Anti-Freeze / Stream Zombi:
-                        # En cámaras reales el ruido térmico del sensor y el segundero cambian píxeles continuamente.
-                        # Si 40 fotogramas consecutivos (~2.5 a 3.5s) son idénticos, el decodificador está congelado.
-                        if h > 0 and w > 0:
-                            frame_sample = frame[::max(1, h // 8), ::max(1, w // 8), 0].tobytes()
-                            if last_frame_sample is not None and frame_sample == last_frame_sample:
-                                consecutive_identical_frames += 1
-                                if consecutive_identical_frames >= 40:
-                                    logger.warning(
-                                        f"⚠️ [Anti-Freeze] Stream congelado detectado ({consecutive_identical_frames} cuadros idénticos consecutivos). "
-                                        f"Forzando reconexión limpia para {current_url}..."
-                                    )
-                                    if '8554' in str(current_url):
-                                        self._check_and_heal_tuya_bridge()
-                                    break
-                            else:
-                                consecutive_identical_frames = 0
-                                last_frame_sample = frame_sample
-                        
                         self.last_frame_time = now
                         self.frame_count += 1
-                        
-                        # Cálculo de FPS en tiempo real
+
                         self._fps_timestamps.append(now)
                         if len(self._fps_timestamps) > 1:
                             duration = self._fps_timestamps[-1] - self._fps_timestamps[0]
                             if duration > 0:
                                 self.fps = round((len(self._fps_timestamps) - 1) / duration, 1)
-                        
+
+                        h, w = frame.shape[:2]
                         if h > 0 and w > 0:
                             with self.lock:
                                 self.width = w
                                 self.height = h
                                 self.frame = frame
                                 self.connected = True
-                        
-                        # Si el sondeo en segundo plano detectó que la URL primaria (HD) se recuperó,
-                        # salimos limpiamente del bucle para liberar self.cap de forma segura en este mismo hilo.
-                        if self._request_switch_primary:
-                            self._request_switch_primary = False
-                            logger.info("🔄 Conmutando de vuelta a stream primario (HD) de forma segura...")
-                            self.rtsp_url = self.primary_url
-                            self.using_fallback = False
-                            self._consecutive_connect_failures = 0
-                            break
-                        
-                        # Sondeo periódico: si estamos en fallback y la primaria es distinta, intentar volver a primaria
-                        if (self.using_fallback and
-                                self.fallback_url and
-                                self.primary_url != self.fallback_url and
-                                now - self._last_primary_probe > self._primary_probe_interval):
-                            self._last_primary_probe = now
-                            self._probe_primary_in_background()
 
-                        
+                        time.sleep(0.003)
+
                 except Exception as e:
-                    logger.error(f"Error en stream_worker: {e}")
-                
+                    logger.error(f"Error en stream_worker ({self.rtsp_url}): {e}")
+
                 finally:
                     with self.lock:
                         self.connected = False
                         self.fps = 0.0
-                    with self._cap_lock:
-                        if self.cap:
-                            try:
-                                self.cap.release()
-                            except Exception:
-                                pass
-                            self.cap = None
-                    
-                    # Si se desconectó mientras usamos primaria, intentar fallback
-                    if (self.fallback_url and
-                            not self.using_fallback and
-                            self._consecutive_connect_failures >= 1):
-                        self._consecutive_connect_failures += 1
-                        if self._consecutive_connect_failures >= 2:
-                            logger.warning(
-                                f"⚠️ Conmutando a stream de respaldo (SD) tras desconexión: {self.fallback_url}"
-                            )
-                            self.rtsp_url = self.fallback_url
-                            self.using_fallback = True
-                            self._consecutive_connect_failures = 0
-                            self._last_primary_probe = time.time()
-                    else:
-                        self._consecutive_connect_failures += 1
-                        if self._consecutive_connect_failures >= 2:
-                            self._check_and_heal_tuya_bridge()
-                    
-                    time.sleep(1.5)
-        
-        self._worker_thread = threading.Thread(target=stream_worker, daemon=True, name="video_stream_worker")
+                    if self.cap:
+                        try:
+                            self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = None
+                    time.sleep(2.0)
+
+        self._worker_thread = threading.Thread(target=stream_worker, daemon=True, name=f"stream-{self.rtsp_url[:20]}")
         self._worker_thread.start()
-    
-    def _probe_primary_in_background(self):
-        """Sondea la URL primaria en un hilo separado sin interrumpir el stream actual."""
-        if not self.fallback_url or self.primary_url == self.fallback_url:
-            return
-        if self._probe_in_progress:
-            return
-        self._probe_in_progress = True
-        
-        def probe():
-            try:
-                logger.info(f"🔍 Sondeando URL primaria: {self.primary_url}")
-                cap = self._try_open_capture(self.primary_url)
-                if cap is not None:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-                    logger.info("✅ URL primaria recuperada. Notificando conmutación segura a HD...")
-                    self._request_switch_primary = True
-                else:
-                    logger.info("⏳ URL primaria aún no disponible, continuando con SD.")
-            except Exception as e:
-                logger.debug(f"Error en sondeo de URL primaria: {e}")
-            finally:
-                self._probe_in_progress = False
-        
-        t = threading.Thread(target=probe, daemon=True, name="primary-probe")
-        t.start()
-    
+
     def read(self):
-        """Retorna una copia del frame más reciente de manera instantánea y segura."""
+        """Retorna el frame más reciente de manera instantánea y segura."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 6.0):
-                return self.frame.copy()
+            if self.frame is not None and (time.time() - self.last_frame_time < 12.0):
+                return self.frame
             return None
 
     def read_with_count(self):
-        """Retorna una copia del frame más reciente junto con su número de secuencia para evitar duplicados."""
+        """Retorna el frame más reciente junto con su número de secuencia."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 6.0):
-                return self.frame.copy(), self.frame_count
+            if self.frame is not None and (time.time() - self.last_frame_time < 12.0):
+                return self.frame, self.frame_count
             return None, 0
-    
+
     def is_connected(self):
         """Verifica si la cámara está activa y transmitiendo frames en tiempo real."""
         with self.lock:
-            return self.connected and (time.time() - self.last_frame_time < 6.0)
-    
+            return self.connected and (time.time() - self.last_frame_time < 12.0)
+
     def get_resolution(self):
         """Retorna la resolución nativa actual del stream."""
         with self.lock:
             return {'width': self.width, 'height': self.height}
-    
+
     def get_fps(self):
-        """Retorna los FPS calculados del stream, reseteando a 0 si la señal se pierde."""
+        """Retorna los FPS calculados del stream."""
         with self.lock:
-            if not self.connected or (time.time() - self.last_frame_time > 4.0):
+            if not self.connected or (time.time() - self.last_frame_time > 8.0):
                 return 0.0
             return self.fps
-    
+
     def is_using_fallback(self):
-        """Retorna True si se está usando la URL de respaldo (SD)."""
         return self.using_fallback
-    
+
     def stop(self):
-        """Detiene el hilo worker y libera el objeto de captura de forma segura sin colisiones C++."""
         self.running = False
         with self.lock:
             self.connected = False
             self.fps = 0.0
-        # Esperar a que el worker finalice su bucle y libere self.cap limpiamente
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=2.0)
-        with self._cap_lock:
-            if self.cap:
-                try:
-                    self.cap.release()
-                except Exception:
-                    pass
-                self.cap = None
+        if self.cap:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None

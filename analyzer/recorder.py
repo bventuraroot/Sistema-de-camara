@@ -13,6 +13,19 @@ import json
 
 logger = logging.getLogger(__name__)
 
+def _clean_rtsp_url(url):
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit, quote, unquote
+        parts = urlsplit(url)
+        netloc = parts.netloc.replace('localhost', '127.0.0.1')
+        path = quote(unquote(parts.path), safe='/')
+        return urlunsplit((parts.scheme, netloc, path, parts.query, parts.fragment))
+    except Exception:
+        return url
+
+
 class Recorder:
     def __init__(self, output_dir=None, rtsp_url='rtsp://localhost:8554/Cámara_de_nubes/hd', max_days=30, segment_minutes=5, continuous=False, has_audio=True):
         if output_dir:
@@ -27,7 +40,7 @@ class Recorder:
             self.output_dir = Path('./recordings')
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.rtsp_url = rtsp_url
+        self.rtsp_url = _clean_rtsp_url(rtsp_url)
         self.has_audio = has_audio
         
         self.continuous_dir = self.output_dir / 'continuous'
@@ -47,13 +60,15 @@ class Recorder:
         self.pre_buffer = deque(maxlen=30)
         self.pre_buffer_lock = threading.Lock()
         
-        # Proceso FFmpeg para grabación continua 24/7 (apagado en Modo Solo Eventos para 0% uso de disco y CPU)
-        self.ffmpeg_proc = None
-        self.ffmpeg_lock = threading.Lock()
-        self.ffmpeg_supervisor_running = False
+        # Grabación Continua 24/7 en memoria (sin conexiones RTSP concurrentes ni colisiones)
+        self.continuous_queue = Queue(maxsize=100)
+        self.continuous_writer = None
+        self.continuous_writer_start = 0
+        self.continuous_writer_lock = threading.Lock()
+        self.continuous_worker_running = False
         self.running = True
         if self.continuous_enabled:
-            self._start_continuous_ffmpeg()
+            self._start_continuous_writer()
         
         # Grabación de Clips de Video por Evento (Movimiento / IA)
         self.clip_queue = Queue(maxsize=200)
@@ -68,115 +83,80 @@ class Recorder:
         audio_str = "Micrófono ACTIVO" if self.has_audio else "Sin audio RTSP"
         logger.info(f"Grabador iniciado en: {self.output_dir} ({mode_str} | {audio_str})")
     
-    # ----------------- GRABACIÓN CONTINUA 24/7 (FFMPEG DIRECTO) -----------------
-    # ----------------- GRABACIÓN CONTINUA 24/7 (FFMPEG DIRECTO) -----------------
-    def _start_continuous_ffmpeg(self):
-        """Lanza FFmpeg solo si la grabación continua 24/7 está explícitamente activada."""
-        with self.ffmpeg_lock:
-            if self.ffmpeg_supervisor_running:
+    # ----------------- GRABACIÓN CONTINUA 24/7 (EN MEMORIA) -----------------
+    def _start_continuous_writer(self):
+        """Inicia el hilo de grabación continua en segmentos MP4 a partir del flujo de la cámara."""
+        with self.continuous_writer_lock:
+            if self.continuous_worker_running:
                 return
-            self.ffmpeg_supervisor_running = True
+            self.continuous_worker_running = True
 
-        def supervisor():
+        def continuous_worker():
+            logger.info(f"Grabador continuo 24/7 iniciado para: {self.output_dir}")
             while self.running and self.continuous_enabled:
                 try:
-                    today_str = datetime.now().strftime('%Y-%m-%d')
-                    day_dir = self.continuous_dir / today_str
-                    day_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    out_pattern = str(self.continuous_dir / "%Y-%m-%d/cam_%Y%m%d_%H%M%S.mp4")
-                    
-                    # Detectar si el encoder de hardware h264_videotoolbox está disponible
-                    use_hw_encoder = self._check_hw_encoder_available()
-                    
-                    cmd = [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error",
-                        "-rtsp_transport", "tcp",
-                        "-fflags", "+genpts",
-                        "-i", self.rtsp_url,
-                        "-map", "0:v:0",
-                    ]
-                    
-                    if use_hw_encoder:
-                        # Apple Silicon VideoToolbox: ~2% CPU, calidad excelente
-                        cmd.extend(["-c:v", "h264_videotoolbox", "-b:v", "2200k"])
-                        encoder_label = "H.264 (VideoToolbox HW)"
-                    else:
-                        # Fallback software: libx264 ultrafast
-                        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"])
-                        encoder_label = "H.264 (libx264 SW)"
-                    
-                    if self.has_audio:
-                        cmd.extend([
-                            "-map", "0:a?",
-                            "-c:a", "aac",
-                            "-b:a", "64k"
-                        ])
-                    cmd.extend([
-                        "-f", "segment",
-                        "-segment_time", str(self.segment_seconds),
-                        "-reset_timestamps", "1",
-                        "-strftime", "1",
-                        "-segment_format", "mp4",
-                        "-segment_format_options", "movflags=+faststart",
-                        out_pattern
-                    ])
-                    
-                    self._stop_ffmpeg_process()
-                    logger.info(f"Iniciando FFmpeg {encoder_label} para grabación continua 24/7 (Audio: {'AAC' if self.has_audio else 'Desactivado'})...")
-                    with self.ffmpeg_lock:
-                        self.ffmpeg_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    
-                    while self.running and self.continuous_enabled:
-                        next_day_dir = self.continuous_dir / datetime.now().strftime('%Y-%m-%d')
-                        next_day_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        proc = None
-                        with self.ffmpeg_lock:
-                            proc = self.ffmpeg_proc
-                        if proc is None or proc.poll() is not None:
-                            logger.warning("Proceso FFmpeg finalizó. Reiniciando en 3s...")
-                            break
-                        time.sleep(2)
-                        
-                except Exception as e:
-                    logger.error(f"Error en supervisor FFmpeg: {e}")
-                    time.sleep(3)
-                
-                self._stop_ffmpeg_process()
-                time.sleep(1)
-            
-            with self.ffmpeg_lock:
-                self.ffmpeg_supervisor_running = False
-        
-        t = threading.Thread(target=supervisor, daemon=True, name="ffmpeg-supervisor")
-        t.start()
-    
-    def _stop_ffmpeg_process(self):
-        with self.ffmpeg_lock:
-            if self.ffmpeg_proc is not None:
-                try:
-                    if self.ffmpeg_proc.poll() is None:
-                        self.ffmpeg_proc.terminate()
-                        self.ffmpeg_proc.wait(timeout=2)
-                except Exception:
                     try:
-                        self.ffmpeg_proc.kill()
-                    except Exception:
-                        pass
-                finally:
-                    self.ffmpeg_proc = None
+                        frame = self.continuous_queue.get(timeout=0.5)
+                    except Empty:
+                        continue
+                    
+                    if frame is None:
+                        continue
+                    
+                    now = time.time()
+                    h, w = frame.shape[:2]
+                    
+                    with self.continuous_writer_lock:
+                        if (self.continuous_writer is None or 
+                            (now - self.continuous_writer_start >= self.segment_seconds)):
+                            self._rotate_continuous_segment(w, h)
+                        
+                        if self.continuous_writer:
+                            self.continuous_writer.write(frame)
+                    
+                    self.continuous_queue.task_done()
+                except Exception as e:
+                    logger.error(f"Error en continuous_worker: {e}")
+                    time.sleep(0.5)
+            
+            with self.continuous_writer_lock:
+                self._close_continuous_writer()
+                self.continuous_worker_running = False
+        
+        t = threading.Thread(target=continuous_worker, daemon=True, name="continuous-writer")
+        t.start()
 
-    def _check_hw_encoder_available(self):
-        """Verifica si el encoder de hardware h264_videotoolbox está disponible en el sistema."""
+    def _rotate_continuous_segment(self, width, height):
+        self._close_continuous_writer()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        day_dir = self.continuous_dir / today_str
+        day_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"cam_{timestamp}.mp4"
+        filepath = str(day_dir / filename)
+        
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=5
+            self.continuous_writer = cv2.VideoWriter(
+                filepath,
+                self.codec,
+                self.fps,
+                (width, height)
             )
-            return "h264_videotoolbox" in result.stdout
-        except Exception:
-            return False
+            self.continuous_writer_start = time.time()
+            logger.info(f"📹 Nuevo segmento de grabación continua 24/7 iniciado: {filename} ({width}x{height})")
+        except Exception as e:
+            logger.error(f"No se pudo inicializar VideoWriter para segmento continuo: {e}")
+            self.continuous_writer = None
+
+    def _close_continuous_writer(self):
+        if self.continuous_writer:
+            try:
+                self.continuous_writer.release()
+                logger.info("📹 Segmento continuo cerrado y guardado correctamente.")
+            except Exception as e:
+                logger.error(f"Error cerrando continuous_writer: {e}")
+            self.continuous_writer = None
 
     # ----------------- CLIPS DE VIDEO POR EVENTO (DETECCIÓN INTELIGENTE) -----------------
     def trigger_event_clip(self, label='evento'):
@@ -369,13 +349,25 @@ class Recorder:
 
     # ----------------- ALIMENTACIÓN Y FOTOS -----------------
     def feed_frame(self, frame):
-        """Alimenta el pre-buffer circular y el clip de evento si hay detección activa."""
+        """Alimenta el pre-buffer circular, la grabación continua y el clip de evento."""
         if frame is None:
             return
         
-        # Mantener buffer circular de los últimos 2 segundos
+        # Mantener buffer circular de los últimos 2 segundos (referencia en memoria, sin copias pesadas)
         with self.pre_buffer_lock:
-            self.pre_buffer.append(frame.copy())
+            self.pre_buffer.append(frame)
+        
+        # Encolar para grabación continua 24/7 si está activa
+        if self.continuous_enabled:
+            if self.continuous_queue.full():
+                try:
+                    self.continuous_queue.get_nowait()
+                except Empty:
+                    pass
+            try:
+                self.continuous_queue.put_nowait(frame)
+            except Exception:
+                pass
         
         # Si un clip de evento está grabando, enviar frame a la cola de escritura
         if self.active_clip is not None:
@@ -410,10 +402,11 @@ class Recorder:
         """Alterna entre Grabación Continua 24/7 y Modo Solo Eventos."""
         self.continuous_enabled = not self.continuous_enabled
         if self.continuous_enabled:
-            self._start_continuous_ffmpeg()
+            self._start_continuous_writer()
             logger.info("Grabación continua 24/7: ACTIVADA")
         else:
-            self._stop_ffmpeg_process()
+            with self.continuous_writer_lock:
+                self._close_continuous_writer()
             logger.info("Grabación continua 24/7: DESACTIVADA (Modo Solo Eventos activo)")
         return self.continuous_enabled
     
@@ -423,9 +416,10 @@ class Recorder:
     def set_continuous(self, state: bool):
         self.continuous_enabled = state
         if self.continuous_enabled:
-            self._start_continuous_ffmpeg()
+            self._start_continuous_writer()
         else:
-            self._stop_ffmpeg_process()
+            with self.continuous_writer_lock:
+                self._close_continuous_writer()
         return self.continuous_enabled
     
     def get_storage_info(self):
@@ -551,6 +545,57 @@ class Recorder:
         except Exception as e:
             logger.error(f"Error listando segmentos: {e}")
         return segments
+
+    def get_recorded_days_summary(self):
+        """Retorna resumen de días con grabaciones, conteos y tamaños para el calendario interactivo."""
+        days = {}
+        # 1. Clips de eventos
+        if self.clips_dir.exists():
+            for d in self.clips_dir.glob('*'):
+                if d.is_dir() and self._parse_dir_date(d.name):
+                    d_str = d.name
+                    mp4s = [f for f in d.glob('*.mp4') if f.is_file()]
+                    count = len(mp4s)
+                    sz = sum(f.stat().st_size for f in mp4s)
+                    if count > 0:
+                        days.setdefault(d_str, {'clips': 0, 'continuous': 0, 'snapshots': 0, 'total_files': 0, 'total_bytes': 0})
+                        days[d_str]['clips'] += count
+                        days[d_str]['total_files'] += count
+                        days[d_str]['total_bytes'] += sz
+
+        # 2. Grabaciones continuas 24/7
+        if self.continuous_dir.exists():
+            for d in self.continuous_dir.glob('*'):
+                if d.is_dir() and self._parse_dir_date(d.name):
+                    d_str = d.name
+                    mp4s = [f for f in d.glob('*.mp4') if f.is_file()]
+                    count = len(mp4s)
+                    sz = sum(f.stat().st_size for f in mp4s)
+                    if count > 0:
+                        days.setdefault(d_str, {'clips': 0, 'continuous': 0, 'snapshots': 0, 'total_files': 0, 'total_bytes': 0})
+                        days[d_str]['continuous'] += count
+                        days[d_str]['total_files'] += count
+                        days[d_str]['total_bytes'] += sz
+
+        # 3. Snapshots
+        if self.snapshots_dir.exists():
+            for f in self.snapshots_dir.glob('*.jpg'):
+                if f.is_file():
+                    try:
+                        d_str = datetime.fromtimestamp(f.stat().st_mtime).strftime('%Y-%m-%d')
+                        sz = f.stat().st_size
+                        days.setdefault(d_str, {'clips': 0, 'continuous': 0, 'snapshots': 0, 'total_files': 0, 'total_bytes': 0})
+                        days[d_str]['snapshots'] += 1
+                        days[d_str]['total_files'] += 1
+                        days[d_str]['total_bytes'] += sz
+                    except Exception:
+                        pass
+
+        for d_str, v in days.items():
+            v['total_mb'] = round(v['total_bytes'] / (1024 * 1024), 2)
+            v['total_gb'] = round(v['total_bytes'] / (1024**3), 3)
+
+        return days
     
     def delete_file(self, file_type: str, filename: str, day: str = None) -> bool:
         """Elimina de forma segura un archivo de clips, continuous o snapshots."""
@@ -807,6 +852,7 @@ class Recorder:
 
     def stop(self):
         self.running = False
-        self._stop_ffmpeg_process()
+        with self.continuous_writer_lock:
+            self._close_continuous_writer()
         with self.clip_lock:
             self._close_active_clip()

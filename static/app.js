@@ -34,6 +34,15 @@ let currentViewMode = 'mosaic'; // 'mosaic' | 'cam1' | 'cam2'
 
 const videoFeedCam1 = document.getElementById('videoFeedCam1');
 const videoFeedCam2 = document.getElementById('videoFeedCam2');
+const canvasFeedCam1 = document.getElementById('canvasFeedCam1');
+const canvasFeedCam2 = document.getElementById('canvasFeedCam2');
+const ctxCam1 = canvasFeedCam1 ? canvasFeedCam1.getContext('2d', { alpha: false }) : null;
+const ctxCam2 = canvasFeedCam2 ? canvasFeedCam2.getContext('2d', { alpha: false }) : null;
+
+const btnToggleEngine = document.getElementById('btnToggleEngine');
+const engineModeIcon = document.getElementById('engineModeIcon');
+const engineModeText = document.getElementById('engineModeText');
+
 const reloadCam1Btn = document.getElementById('reloadCam1Btn');
 const reloadCam2Btn = document.getElementById('reloadCam2Btn');
 
@@ -57,25 +66,190 @@ const aiAlertMsgCam2 = document.getElementById('aiAlertMsgCam2');
 const isMobileDevice = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent) || window.innerWidth <= 768;
 const BLANK_FRAME = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"%3E%3C/svg%3E';
 
-// En MÓVIL: siempre forzar 'mobile' para decodificación suave y 0 lag
+// Motor de Reproducción: 'mjpeg' (Flujo Directo Nativo) o 'canvas' (Cero Lag GPU)
+let playerEngine = localStorage.getItem('player_engine');
+if (!playerEngine || (!isMobileDevice && playerEngine === 'canvas')) {
+    playerEngine = 'mjpeg';
+    localStorage.setItem('player_engine', 'mjpeg');
+}
+
+// En MÓVIL: forzar 'mobile' para decodificación suave
 let currentStreamQuality;
 if (isMobileDevice) {
     currentStreamQuality = 'mobile';
     localStorage.removeItem('camera_stream_quality');
-    console.log('📱 Dispositivo móvil: forzando modo mobile ultra-ligero (640x360)');
 } else {
     currentStreamQuality = localStorage.getItem('camera_stream_quality') || 'efficient';
 }
 const streamQualitySelect = document.getElementById('streamQualitySelect');
+
+let canvasLoopRunning = false;
+let canvasFid = { cam1: 0, cam2: 0 };
+let canvasFetching = { cam1: false, cam2: false };
+let canvasFps = { cam1: 0, cam2: 0 };
+let canvasFrameCount = { cam1: 0, cam2: 0 };
+let canvasLastFpsTime = { cam1: performance.now(), cam2: performance.now() };
+
+async function fetchCanvasFrame(cid) {
+    if (!canvasLoopRunning || playerEngine !== 'canvas') return;
+    if (canvasFetching[cid]) return;
+
+    if (isMobileDevice) {
+        if (currentViewMode === 'cam1' && cid !== 'cam1') return;
+        if (currentViewMode === 'cam2' && cid !== 'cam2') return;
+    }
+
+    const canvasEl = cid === 'cam1' ? canvasFeedCam1 : canvasFeedCam2;
+    const ctx = cid === 'cam1' ? ctxCam1 : ctxCam2;
+    if (!canvasEl || !ctx) return;
+
+    canvasFetching[cid] = true;
+    const abortCtrl = new AbortController();
+    const timeoutId = setTimeout(() => abortCtrl.abort(), 1200);
+
+    try {
+        const lastFid = canvasFid[cid] || 0;
+        const url = lastFid > 0
+            ? `/api/camera/${cid}/live_frame?quality=${currentStreamQuality}&since_fid=${lastFid}&t=${Date.now()}`
+            : `/api/camera/${cid}/live_frame?quality=${currentStreamQuality}&t=${Date.now()}`;
+
+        const res = await fetch(url, { cache: 'no-store', signal: abortCtrl.signal });
+        clearTimeout(timeoutId);
+
+        if (res.status === 304 || res.status === 204) {
+            canvasFetching[cid] = false;
+            setTimeout(() => {
+                if (canvasLoopRunning && playerEngine === 'canvas') {
+                    requestAnimationFrame(() => fetchCanvasFrame(cid));
+                }
+            }, 30);
+            return;
+        }
+
+        if (res.ok && res.status === 200) {
+            const fid = res.headers.get('X-Frame-ID');
+            if (fid) canvasFid[cid] = parseInt(fid, 10);
+
+            const blob = await res.blob();
+            if (blob.size > 200) {
+                if ('createImageBitmap' in window) {
+                    try {
+                        const bitmap = await createImageBitmap(blob);
+                        if (canvasEl.width !== bitmap.width || canvasEl.height !== bitmap.height) {
+                            canvasEl.width = bitmap.width;
+                            canvasEl.height = bitmap.height;
+                        }
+                        ctx.drawImage(bitmap, 0, 0);
+                        bitmap.close();
+                    } catch (e) {}
+                } else {
+                    await new Promise((resolve) => {
+                        const img = new Image();
+                        const bUrl = URL.createObjectURL(blob);
+                        img.onload = () => {
+                            if (canvasEl.width !== img.naturalWidth || canvasEl.height !== img.naturalHeight) {
+                                canvasEl.width = img.naturalWidth;
+                                canvasEl.height = img.naturalHeight;
+                            }
+                            ctx.drawImage(img, 0, 0);
+                            URL.revokeObjectURL(bUrl);
+                            resolve();
+                        };
+                        img.onerror = () => { URL.revokeObjectURL(bUrl); resolve(); };
+                        img.src = bUrl;
+                    });
+                }
+
+                // Cálculo de FPS reales en el cliente
+                const now = performance.now();
+                canvasFrameCount[cid]++;
+                if (now - canvasLastFpsTime[cid] >= 1000) {
+                    canvasFps[cid] = ((canvasFrameCount[cid] * 1000) / (now - canvasLastFpsTime[cid])).toFixed(1);
+                    canvasFrameCount[cid] = 0;
+                    canvasLastFpsTime[cid] = now;
+                    const badge = cid === 'cam1' ? cam1FpsBadge : cam2FpsBadge;
+                    if (badge) badge.textContent = `${canvasFps[cid]} fps`;
+                }
+
+                canvasFetching[cid] = false;
+                if (canvasLoopRunning && playerEngine === 'canvas') {
+                    requestAnimationFrame(() => fetchCanvasFrame(cid));
+                }
+                return;
+            }
+        }
+    } catch (e) {
+    } finally {
+        clearTimeout(timeoutId);
+    }
+
+    canvasFetching[cid] = false;
+    setTimeout(() => {
+        if (canvasLoopRunning && playerEngine === 'canvas') {
+            requestAnimationFrame(() => fetchCanvasFrame(cid));
+        }
+    }, 40);
+}
+
+function startCanvasLoops() {
+    canvasLoopRunning = true;
+    requestAnimationFrame(() => fetchCanvasFrame('cam1'));
+    requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+}
+
+function stopCanvasLoops() {
+    canvasLoopRunning = false;
+    canvasFetching.cam1 = false;
+    canvasFetching.cam2 = false;
+}
+
+function updateEngineUI() {
+    const isCanvas = (playerEngine === 'canvas');
+    if (btnToggleEngine) {
+        btnToggleEngine.classList.toggle('active', isCanvas);
+        if (engineModeIcon) engineModeIcon.textContent = isCanvas ? '⚡' : '🌊';
+        if (engineModeText) engineModeText.textContent = isCanvas ? 'Cero Lag (GPU)' : 'Flujo Directo';
+    }
+
+    if (canvasFeedCam1) canvasFeedCam1.style.display = isCanvas ? 'block' : 'none';
+    if (canvasFeedCam2) canvasFeedCam2.style.display = isCanvas ? 'block' : 'none';
+    if (videoFeedCam1) videoFeedCam1.style.display = isCanvas ? 'none' : 'block';
+    if (videoFeedCam2) videoFeedCam2.style.display = isCanvas ? 'none' : 'block';
+
+    if (isCanvas) {
+        if (videoFeedCam1) videoFeedCam1.src = BLANK_FRAME;
+        if (videoFeedCam2) videoFeedCam2.src = BLANK_FRAME;
+        startCanvasLoops();
+    } else {
+        stopCanvasLoops();
+        refreshActiveFeeds(true);
+    }
+}
+
+if (btnToggleEngine) {
+    btnToggleEngine.addEventListener('click', () => {
+        playerEngine = (playerEngine === 'canvas') ? 'mjpeg' : 'canvas';
+        localStorage.setItem('player_engine', playerEngine);
+        updateEngineUI();
+    });
+}
 
 function getFeedUrl(cid) {
     return `/video_feed/${cid}?quality=${currentStreamQuality}&t=${Date.now()}`;
 }
 
 function refreshActiveFeeds(force = false) {
+    if (playerEngine === 'canvas') {
+        if (canvasLoopRunning) {
+            canvasFetching.cam1 = false;
+            canvasFetching.cam2 = false;
+            requestAnimationFrame(() => fetchCanvasFrame('cam1'));
+            requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+        }
+        return;
+    }
+
     if (isMobileDevice) {
-        // En celulares: decodificar 2 streams MJPEG a la vez satura la GPU/CPU móvil.
-        // Se conecta de forma óptima la cámara que el usuario está viendo y se pausa la oculta con BLANK_FRAME.
         if (currentViewMode === 'cam2') {
             if (videoFeedCam2 && (!videoFeedCam2.src || !videoFeedCam2.src.includes('/video_feed/cam2') || force)) {
                 videoFeedCam2.src = getFeedUrl('cam2');
@@ -90,7 +264,7 @@ function refreshActiveFeeds(force = false) {
             if (videoFeedCam2 && videoFeedCam2.src !== BLANK_FRAME) {
                 videoFeedCam2.src = BLANK_FRAME;
             }
-        } else { // mosaic en móvil
+        } else {
             if (videoFeedCam1 && (!videoFeedCam1.src || !videoFeedCam1.src.includes('/video_feed/cam1') || force)) {
                 videoFeedCam1.src = getFeedUrl('cam1');
             }
@@ -99,7 +273,6 @@ function refreshActiveFeeds(force = false) {
             }
         }
     } else {
-        // En PC: ambas cámaras se mantienen conectadas para cambio de pestaña instantáneo en 0 ms
         if (videoFeedCam1 && (!videoFeedCam1.src || !videoFeedCam1.src.includes('/video_feed/cam1') || force)) {
             videoFeedCam1.src = getFeedUrl('cam1');
         }
@@ -107,7 +280,6 @@ function refreshActiveFeeds(force = false) {
             videoFeedCam2.src = getFeedUrl('cam2');
         }
     }
-    // Ocultar botones de reconexión residuales
     if (reloadCam1Btn) reloadCam1Btn.style.display = 'none';
     if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
 }
@@ -127,10 +299,19 @@ let lastVisibilityResumeTime = 0;
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         const now = Date.now();
-        if (now - lastVisibilityResumeTime > 4000) {
+        if (now - lastVisibilityResumeTime > 2000) {
             lastVisibilityResumeTime = now;
-            console.log('📱 Dispositivo reanudado: verificando flujos de video...');
-            refreshActiveFeeds(false);
+            lastCam1FrameTime = now;
+            lastCam2FrameTime = now;
+            console.log('📱 Dispositivo reanudado: refrescando flujos de video para tiempo real sin retraso...');
+            if (playerEngine === 'canvas') {
+                canvasFetching.cam1 = false;
+                canvasFetching.cam2 = false;
+                requestAnimationFrame(() => fetchCanvasFrame('cam1'));
+                requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+            } else {
+                refreshActiveFeeds(true);
+            }
         }
     }
 });
@@ -155,6 +336,12 @@ function setViewMode(mode) {
     // En móvil, sincronizar feed activo para máxima fluidez y cero lag
     if (isMobileDevice) {
         refreshActiveFeeds();
+    }
+    if (playerEngine === 'canvas') {
+        canvasFetching.cam1 = false;
+        canvasFetching.cam2 = false;
+        requestAnimationFrame(() => fetchCanvasFrame('cam1'));
+        requestAnimationFrame(() => fetchCanvasFrame('cam2'));
     }
 
     // Ocultar botones de reconectar para que no queden visibles
@@ -217,16 +404,19 @@ if (toggleSidebarBtn) {
     }
 }
 
-// Watchdogs de reconexión para ambas cámaras
+// Watchdogs de reconexión y monitoreo de fluidez en tiempo real para ambas cámaras
 let isRecoveringCam1 = false;
 let isRecoveringCam2 = false;
 let cam1FailCount = 0;
 let cam2FailCount = 0;
+let lastCam1FrameTime = Date.now();
+let lastCam2FrameTime = Date.now();
 
 function reloadCam1() {
     if (!videoFeedCam1 || isRecoveringCam1) return;
     if (isMobileDevice && currentViewMode === 'cam2') return;
     isRecoveringCam1 = true;
+    lastCam1FrameTime = Date.now();
     if (reloadCam1Btn) reloadCam1Btn.style.display = 'none';
     console.log('🔄 Reconectando Cámara 1...');
     videoFeedCam1.src = getFeedUrl('cam1');
@@ -237,6 +427,7 @@ function reloadCam2() {
     if (!videoFeedCam2 || isRecoveringCam2) return;
     if (isMobileDevice && currentViewMode === 'cam1') return;
     isRecoveringCam2 = true;
+    lastCam2FrameTime = Date.now();
     if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
     console.log('🔄 Reconectando Cámara 2...');
     videoFeedCam2.src = getFeedUrl('cam2');
@@ -250,7 +441,7 @@ if (videoFeedCam1) {
         if (cam1FailCount >= 3 && reloadCam1Btn && (!isMobileDevice || currentViewMode !== 'cam2')) {
             reloadCam1Btn.style.display = 'inline-flex';
         }
-        setTimeout(reloadCam1, 1500);
+        setTimeout(reloadCam1, 2000);
     });
     videoFeedCam1.addEventListener('load', () => {
         cam1FailCount = 0;
@@ -267,7 +458,7 @@ if (videoFeedCam2) {
         if (cam2FailCount >= 3 && reloadCam2Btn && (!isMobileDevice || currentViewMode !== 'cam1')) {
             reloadCam2Btn.style.display = 'inline-flex';
         }
-        setTimeout(reloadCam2, 1500);
+        setTimeout(reloadCam2, 2000);
     });
     videoFeedCam2.addEventListener('load', () => {
         cam2FailCount = 0;
@@ -1463,6 +1654,9 @@ confidenceSlider.addEventListener('change', async (e) => {
     }
 });
 
+let prevOnlineCam1 = null;
+let prevOnlineCam2 = null;
+
 // ----------------- ESTADO DEL SISTEMA -----------------
 async function pollStatus() {
     try {
@@ -1493,6 +1687,12 @@ async function pollStatus() {
                 if (recText1) {
                     recText1.textContent = c1.continuous_recording ? 'REC 24/7' : 'EVENTOS';
                 }
+                // Si la cámara estaba caída y acaba de reconectarse en el backend, refrescar feed
+                if (c1.online && prevOnlineCam1 === false) {
+                    console.log('✅ Cámara 1 recuperada en el servidor, reconectando feed visual...');
+                    reloadCam1();
+                }
+                prevOnlineCam1 = c1.online;
             }
 
             // Cámara 2 (iCam365)
@@ -1507,6 +1707,12 @@ async function pollStatus() {
                 if (recText2) {
                     recText2.textContent = c2.continuous_recording ? 'REC 24/7' : 'EVENTOS';
                 }
+                // Si la cámara estaba caída y acaba de reconectarse en el backend, refrescar feed
+                if (c2.online && prevOnlineCam2 === false) {
+                    console.log('✅ Cámara 2 recuperada en el servidor, reconectando feed visual...');
+                    reloadCam2();
+                }
+                prevOnlineCam2 = c2.online;
             }
 
             if (window.updatePerCameraCache) {
@@ -1665,6 +1871,33 @@ async function pollStatus() {
     }
 }
 
+// ----------------- NAVEGACIÓN POR PESTAÑAS DEL PANEL LATERAL -----------------
+function initSidebarTabNavigation() {
+    const tabNavActivity = document.getElementById('tabNavActivity');
+    const tabNavControls = document.getElementById('tabNavControls');
+    const tabNavSchedule = document.getElementById('tabNavSchedule');
+
+    const paneActivity = document.getElementById('paneActivity');
+    const paneControls = document.getElementById('paneControls');
+    const paneSchedule = document.getElementById('paneSchedule');
+
+    const tabs = [
+        { btn: tabNavActivity, pane: paneActivity },
+        { btn: tabNavControls, pane: paneControls },
+        { btn: tabNavSchedule, pane: paneSchedule }
+    ];
+
+    tabs.forEach(({ btn, pane }) => {
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            tabs.forEach(t => {
+                if (t.btn) t.btn.classList.toggle('active', t.btn === btn);
+                if (t.pane) t.pane.style.display = t.btn === btn ? 'flex' : 'none';
+            });
+        });
+    });
+}
+
 // ----------------- PROGRAMACIÓN DE HORARIOS DE CAPTURA -----------------
 function initScheduleControls() {
     const toggleScheduleSwitch = document.getElementById('toggleScheduleSwitch');
@@ -1676,6 +1909,8 @@ function initScheduleControls() {
     const dayPills = document.querySelectorAll('.day-pill');
     const schedCam1 = document.getElementById('schedCam1');
     const schedCam2 = document.getElementById('schedCam2');
+    const schedApplyClips = document.getElementById('schedApplyClips');
+    const schedApplySnapshots = document.getElementById('schedApplySnapshots');
     const saveScheduleBtn = document.getElementById('saveScheduleBtn');
     const schedSaveToast = document.getElementById('schedSaveToast');
     const presetNightBtn = document.getElementById('presetNightBtn');
@@ -1721,6 +1956,9 @@ function initScheduleControls() {
             const cams = sched.target_cameras || ['cam1', 'cam2'];
             if (schedCam1) schedCam1.checked = cams.includes('cam1');
             if (schedCam2) schedCam2.checked = cams.includes('cam2');
+
+            if (schedApplyClips) schedApplyClips.checked = sched.apply_to_clips !== undefined ? !!sched.apply_to_clips : true;
+            if (schedApplySnapshots) schedApplySnapshots.checked = sched.apply_to_snapshots !== undefined ? !!sched.apply_to_snapshots : true;
             
             updateScheduleBanner(data);
         } catch (e) {
@@ -1783,11 +2021,22 @@ function initScheduleControls() {
         if (schedCam1 && schedCam1.checked) target_cameras.push('cam1');
         if (schedCam2 && schedCam2.checked) target_cameras.push('cam2');
 
+        const apply_to_clips = schedApplyClips ? schedApplyClips.checked : true;
+        const apply_to_snapshots = schedApplySnapshots ? schedApplySnapshots.checked : true;
+
         try {
             const res = await fetch('/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled, start_time, end_time, days, target_cameras })
+                body: JSON.stringify({
+                    enabled,
+                    start_time,
+                    end_time,
+                    days,
+                    target_cameras,
+                    apply_to_clips,
+                    apply_to_snapshots
+                })
             });
             const data = await res.json();
             updateScheduleBanner(data);
@@ -1808,6 +2057,8 @@ function initScheduleControls() {
 
     if (saveScheduleBtn) saveScheduleBtn.addEventListener('click', saveSchedule);
     if (toggleScheduleSwitch) toggleScheduleSwitch.addEventListener('change', saveSchedule);
+    if (schedApplyClips) schedApplyClips.addEventListener('change', saveSchedule);
+    if (schedApplySnapshots) schedApplySnapshots.addEventListener('change', saveSchedule);
 
     loadSchedule();
 }
@@ -2576,7 +2827,8 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('📱 Móvil detectado: arrancando en vista individual para máxima fluidez');
     }
 
-    refreshActiveFeeds();
+    updateEngineUI();
+    initSidebarTabNavigation();
     initSSE();
     initPtzControls();
     initScheduleControls();

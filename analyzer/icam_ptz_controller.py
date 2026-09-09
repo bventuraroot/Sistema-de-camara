@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 import socket
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,8 @@ class ICam365PTZController:
       - Auto-Tracking inteligente con zonas muertas
       - Fijación de Punto Central (Home Position)
       - Retorno automático al Punto Central tras perder el objetivo
+      - Resolución dinámica y auto-recuperación de IP
+      - Gestión de credenciales ONVIF
     """
     DIR_SPEED = {
         'left': (-1.0, 0.0),
@@ -26,18 +29,21 @@ class ICam365PTZController:
         'downright': (0.8, -0.8)
     }
 
-    def __init__(self, ip="192.168.1.26", port=80, profile_token="Profile_1"):
+    def __init__(self, ip="192.168.1.18", port=80, profile_token="Profile_1", username="admin", password="admin", ip_getter=None):
         self.ip = ip
         self.port = port
         self.profile_token = profile_token
+        self.username = username
+        self.password = password
+        self.ip_getter = ip_getter
         self.active = True
         self.lock = threading.Lock()
         self.is_moving = False
         self.last_move_time = 0.0
         self.last_direction = None
         self.pulse_duration = 0.22
-        self.cooldown = 0.35  # Reducido de 1.2s a 350ms para respuesta ultra-rápida
-        self.deadzone_x = (0.40, 0.60)  # Reacciona de inmediato fuera del 20% central
+        self.cooldown = 0.35  # 350ms para respuesta ultra-rápida
+        self.deadzone_x = (0.40, 0.60)
         self.deadzone_y = (0.35, 0.65)
         self.vertical_tracking = True
         self.manual_start_time = 0.0
@@ -52,7 +58,33 @@ class ICam365PTZController:
         self._start_home_watcher()
         logger.info(f"ICam365PTZController ONVIF inicializado para {self.ip}:{self.port} con Punto Central y Auto-Retorno activo.")
 
+    def update_ip(self, new_ip: str):
+        """Actualiza la IP de destino de la cámara iCam365."""
+        if new_ip and new_ip != self.ip:
+            logger.info(f"🔄 [Cámara 2 ONVIF] Actualizando IP de {self.ip} a {new_ip}")
+            with self.lock:
+                self.ip = new_ip
+
+    def set_credentials(self, username: str = "", password: str = ""):
+        """Actualiza credenciales de acceso ONVIF."""
+        with self.lock:
+            self.username = username or "admin"
+            self.password = password or "admin"
+        logger.info(f"🔐 [Cámara 2 ONVIF] Credenciales actualizadas para usuario '{self.username}'")
+
+    def _get_current_ip(self) -> str:
+        """Obtiene la IP actual, resolviendo dinámicamente si hay un getter disponible."""
+        if self.ip_getter and callable(self.ip_getter):
+            try:
+                dyn_ip = self.ip_getter()
+                if dyn_ip and dyn_ip != self.ip:
+                    self.ip = dyn_ip
+            except Exception:
+                pass
+        return self.ip
+
     def _send_soap(self, body_content: str) -> bool:
+        ip = self._get_current_ip()
         soap = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl">'
@@ -61,7 +93,7 @@ class ICam365PTZController:
         )
         req = (
             f'POST /onvif/PTZ HTTP/1.1\r\n'
-            f'Host: {self.ip}:{self.port}\r\n'
+            f'Host: {ip}:{self.port}\r\n'
             f'Content-Type: application/soap+xml; charset=utf-8\r\n'
             f'Content-Length: {len(soap)}\r\n'
             f'Connection: close\r\n\r\n'
@@ -69,14 +101,14 @@ class ICam365PTZController:
         )
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2.5)
-            s.connect((self.ip, self.port))
+            s.settimeout(1.5)
+            s.connect((ip, self.port))
             s.sendall(req.encode('utf-8'))
             res = s.recv(1024)
             s.close()
             return b'200' in res or b'ContinuousMoveResponse' in res or b'StopResponse' in res
         except Exception as e:
-            logger.error(f"Error enviando comando ONVIF PTZ a {self.ip}:{self.port}: {e}")
+            logger.error(f"Error enviando comando ONVIF PTZ a {ip}:{self.port}: {e}")
             return False
 
     def _send_direction(self, direction: str) -> bool:
@@ -379,7 +411,8 @@ class ICam365PTZController:
             'home_return_delay': self.home_return_delay,
             'time_until_return': time_left,
             'last_direction': self.last_direction,
-            'active': self.active
+            'active': self.active,
+            'ip': self.ip
         }
 
     def is_active(self) -> bool:
@@ -398,5 +431,5 @@ class ICam365PTZController:
     def test_connection(self) -> dict:
         ok = self._send_stop()
         if ok:
-            return {'success': True, 'status': 200, 'message': '¡Motor PTZ ONVIF de Cámara 2 conectado y operativo!'}
-        return {'success': False, 'status': 500, 'message': 'No se pudo comunicar con el servicio ONVIF PTZ'}
+            return {'success': True, 'status': 200, 'message': f'¡Motor PTZ ONVIF de Cámara 2 conectado ({self.ip}:{self.port}) y operativo!'}
+        return {'success': False, 'status': 500, 'message': f'No se pudo comunicar con el servicio ONVIF PTZ en {self.ip}:{self.port}'}

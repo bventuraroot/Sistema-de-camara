@@ -7,6 +7,8 @@ let lastFpsUpdate = performance.now();
 let lastFrameTime = performance.now();
 let trackingEnabled = true;
 let playerMode = localStorage.getItem('mobile_player_mode') || 'canvas'; // 'canvas' o 'mjpeg'
+let lastFrameId = 0;
+let lastMjpegTime = Date.now();
 
 const canvas = document.getElementById('liveCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -49,18 +51,34 @@ async function fetchNextFrame() {
     isFetching = true;
     const reqStart = performance.now();
     const abortCtrl = new AbortController();
-    const timeoutId = setTimeout(() => abortCtrl.abort(), 600);
+    const timeoutId = setTimeout(() => abortCtrl.abort(), 1200);
 
     try {
-        const response = await fetch(`/api/camera/${currentCam}/live_frame?quality=mobile&t=${Date.now()}`, {
+        const url = lastFrameId > 0 
+            ? `/api/camera/${currentCam}/live_frame?quality=mobile&since_fid=${lastFrameId}&t=${Date.now()}`
+            : `/api/camera/${currentCam}/live_frame?quality=mobile&t=${Date.now()}`;
+
+        const response = await fetch(url, {
             cache: 'no-store',
             signal: abortCtrl.signal
         });
         clearTimeout(timeoutId);
 
+        if (response.status === 304 || response.status === 204) {
+            // Fotograma sin cambios: esperar ciclo de refresco ligero
+            isFetching = false;
+            setTimeout(() => { requestAnimationFrame(fetchNextFrame); }, 25);
+            return;
+        }
+
         if (response.ok && response.status === 200) {
+            const fidHeader = response.headers.get('X-Frame-ID');
+            if (fidHeader) {
+                lastFrameId = parseInt(fidHeader, 10);
+            }
+
             const blob = await response.blob();
-            if (blob.size > 500) {
+            if (blob.size > 200) {
                 if ('createImageBitmap' in window) {
                     try {
                         const bitmap = await createImageBitmap(blob);
@@ -74,21 +92,21 @@ async function fetchNextFrame() {
                 } else {
                     await new Promise((resolve) => {
                         const img = new Image();
-                        const url = URL.createObjectURL(blob);
+                        const blobUrl = URL.createObjectURL(blob);
                         img.onload = () => {
                             if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
                                 canvas.width = img.naturalWidth;
                                 canvas.height = img.naturalHeight;
                             }
                             ctx.drawImage(img, 0, 0);
-                            URL.revokeObjectURL(url);
+                            URL.revokeObjectURL(blobUrl);
                             resolve();
                         };
                         img.onerror = () => {
-                            URL.revokeObjectURL(url);
+                            URL.revokeObjectURL(blobUrl);
                             resolve();
                         };
-                        img.src = url;
+                        img.src = blobUrl;
                     });
                 }
 
@@ -119,7 +137,7 @@ async function fetchNextFrame() {
     }
 
     isFetching = false;
-    setTimeout(fetchNextFrame, 60);
+    setTimeout(fetchNextFrame, 40);
 }
 
 // Selector de Modo de Reproducción
@@ -390,31 +408,62 @@ if (btnFullscreen && videoContainer) {
     });
 }
 
-// Canal SSE para Alertas en Vivo
+// Canal SSE para Alertas en Vivo (Corregido a /events/stream)
 function initMobileEvents() {
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = (e) => {
+    let evtSource = null;
+    function connectSSE() {
         try {
-            const ev = JSON.parse(e.data);
-            if (ev.type === 'motion' && ev.camera === currentCam) {
-                if (mobileAlertMotion) {
-                    mobileAlertMotion.style.display = 'block';
-                    setTimeout(() => { mobileAlertMotion.style.display = 'none'; }, 2000);
-                }
-            } else if (ev.type === 'ai_detection' && ev.camera === currentCam) {
-                if (mobileAlertAi) {
-                    if (mobileAlertAiMsg) mobileAlertAiMsg.textContent = ev.label || 'Persona';
-                    mobileAlertAi.style.display = 'block';
-                    setTimeout(() => { mobileAlertAi.style.display = 'none'; }, 2500);
-                }
-            } else if (ev.type === 'tracking' && ev.camera === currentCam) {
-                if (mobileAlertTracking) {
-                    mobileAlertTracking.style.display = 'block';
-                    setTimeout(() => { mobileAlertTracking.style.display = 'none'; }, 1500);
-                }
+            evtSource = new EventSource('/events/stream');
+            evtSource.onmessage = (e) => {
+                try {
+                    const ev = JSON.parse(e.data);
+                    const isForCurrentCam = (ev.camera_id === currentCam || ev.camera === currentCam);
+                    if (!isForCurrentCam) return;
+
+                    if (ev.is_ai || ev.type === 'person' || ev.type === 'car' || ev.type === 'ai_detection') {
+                        if (mobileAlertAi) {
+                            if (mobileAlertAiMsg) mobileAlertAiMsg.textContent = ev.label || 'Persona';
+                            mobileAlertAi.style.display = 'block';
+                            setTimeout(() => { mobileAlertAi.style.display = 'none'; }, 2500);
+                        }
+                    } else if (ev.type === 'motion') {
+                        if (mobileAlertMotion) {
+                            mobileAlertMotion.style.display = 'block';
+                            setTimeout(() => { mobileAlertMotion.style.display = 'none'; }, 2000);
+                        }
+                    } else if (ev.type === 'tracking') {
+                        if (mobileAlertTracking) {
+                            mobileAlertTracking.style.display = 'block';
+                            setTimeout(() => { mobileAlertTracking.style.display = 'none'; }, 1500);
+                        }
+                    }
+                } catch (err) {}
+            };
+            evtSource.onerror = () => {
+                if (evtSource) evtSource.close();
+                setTimeout(connectSSE, 3000);
+            };
+        } catch (e) {
+            setTimeout(connectSSE, 3000);
+        }
+    }
+    connectSSE();
+}
+
+// Watchdog Anti-Congelamiento para modo MJPEG Móvil
+if (nativeStreamImg) {
+    nativeStreamImg.addEventListener('load', () => {
+        lastMjpegTime = Date.now();
+    });
+    setInterval(() => {
+        if (playerMode === 'mjpeg' && isRunning && document.visibilityState === 'visible') {
+            if (Date.now() - lastMjpegTime > 4500) {
+                console.log('🔄 [Móvil Watchdog] Stream MJPEG inactivo, reconectando...');
+                lastMjpegTime = Date.now();
+                nativeStreamImg.src = `/video_feed/${currentCam}?quality=mobile&t=${Date.now()}`;
             }
-        } catch (err) {}
-    };
+        }
+    }, 2500);
 }
 
 initMobileEvents();

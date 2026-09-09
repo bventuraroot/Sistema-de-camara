@@ -72,6 +72,23 @@ const timelineHoursStrip = document.getElementById('timelineHoursStrip');
 const allHoursBtn = document.getElementById('allHoursBtn');
 const timelineSelectedDayBadge = document.getElementById('timelineSelectedDayBadge');
 
+// Elementos del Calendario Visual de Grabaciones
+const calendarSectionCard = document.getElementById('calendarSectionCard');
+const toggleCalendarBtn = document.getElementById('toggleCalendarBtn');
+const calPrevMonthBtn = document.getElementById('calPrevMonthBtn');
+const calNextMonthBtn = document.getElementById('calNextMonthBtn');
+const calTodayBtn = document.getElementById('calTodayBtn');
+const calendarMonthTitle = document.getElementById('calendarMonthTitle');
+const calendarDaysGrid = document.getElementById('calendarDaysGrid');
+const calSelectedDateText = document.getElementById('calSelectedDateText');
+const calSelectedDayStatsBadge = document.getElementById('calSelectedDayStatsBadge');
+const calFilterDayBtn = document.getElementById('calFilterDayBtn');
+const calPurgeDayBtn = document.getElementById('calPurgeDayBtn');
+
+let calendarSummaryData = {};
+let currentCalYear = new Date().getFullYear();
+let currentCalMonth = new Date().getMonth(); // 0..11
+
 // Conmutador de Vistas
 const viewModeGridBtn = document.getElementById('viewModeGridBtn');
 const viewModeListBtn = document.getElementById('viewModeListBtn');
@@ -201,6 +218,9 @@ async function loadMediaItems() {
 
         // Construir la barra de 24 horas para el día seleccionado
         buildTimelineHours();
+
+        // Cargar y renderizar el resumen del calendario visual
+        loadCalendarSummary();
 
         // Renderizar la lista filtrada
         renderFilteredMedia();
@@ -583,70 +603,340 @@ document.querySelectorAll('#camFilterGroup .filter-tab').forEach(btn => {
         document.querySelectorAll('#camFilterGroup .filter-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         currentFilterCam = btn.dataset.cam;
+        loadCalendarSummary();
         buildTimelineHours();
         renderFilteredMedia();
     });
 });
 
-// Píldoras rápidas de días (Hoy, Ayer, Hace 2 días, Todo)
-document.querySelectorAll('#quickDaysGroup .quick-day-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.querySelectorAll('#quickDaysGroup .quick-day-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+// ==========================================================================
+// CALENDARIO VISUAL DE GRABACIONES POR DÍA
+// ==========================================================================
+const MONTH_NAMES_ES = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+];
 
-        const daysAgo = btn.dataset.daysAgo;
-        if (daysAgo === 'all') {
-            currentFilterDate = '';
-            dateFilterInput.value = '';
-            timelineSelectedDayBadge.textContent = 'Todo el Historial';
-        } else {
-            const n = parseInt(daysAgo, 10);
-            currentFilterDate = getDaysAgoStr(n);
-            dateFilterInput.value = currentFilterDate;
-            timelineSelectedDayBadge.textContent = n === 0 ? 'Hoy' : (n === 1 ? 'Ayer' : `Hace ${n} días`);
+async function loadCalendarSummary() {
+    try {
+        const url = `/api/media/calendar-summary?camera_id=${currentFilterCam}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        calendarSummaryData = data.recorded_days || {};
+
+        // Actualizar selector rápido de píldoras con días históricos con grabaciones
+        updateDynamicQuickDayPills(data.days_list || []);
+
+        // Renderizar el mes en el calendario visual
+        renderVisualCalendar(currentCalYear, currentCalMonth);
+        updateCalendarSelectionBar();
+    } catch (e) {
+        console.error('Error cargando resumen de calendario:', e);
+    }
+}
+
+function updateDynamicQuickDayPills(daysList) {
+    if (!quickDaysGroup) return;
+    const todayStr = getDaysAgoStr(0);
+    const yesterdayStr = getDaysAgoStr(1);
+    const twoDaysAgoStr = getDaysAgoStr(2);
+
+    let pillsHtml = `
+        <button type="button" class="quick-day-btn ${currentFilterDate === todayStr ? 'active' : ''}" data-date="${todayStr}">📅 Hoy</button>
+        <button type="button" class="quick-day-btn ${currentFilterDate === yesterdayStr ? 'active' : ''}" data-date="${yesterdayStr}">📅 Ayer</button>
+        <button type="button" class="quick-day-btn ${currentFilterDate === twoDaysAgoStr ? 'active' : ''}" data-date="${twoDaysAgoStr}">📅 Hace 2 días</button>
+    `;
+
+    // Agregar otras fechas que contengan grabaciones
+    daysList.forEach(dStr => {
+        if (dStr !== todayStr && dStr !== yesterdayStr && dStr !== twoDaysAgoStr) {
+            const count = calendarSummaryData[dStr]?.total_files || 0;
+            pillsHtml += `<button type="button" class="quick-day-btn ${currentFilterDate === dStr ? 'active' : ''}" data-date="${dStr}">📅 ${dStr} (${count})</button>`;
+        }
+    });
+
+    pillsHtml += `<button type="button" class="quick-day-btn ${!currentFilterDate ? 'active' : ''}" data-date="all">🌐 Todo</button>`;
+    quickDaysGroup.innerHTML = pillsHtml;
+
+    quickDaysGroup.querySelectorAll('.quick-day-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const d = btn.dataset.date;
+            if (d === 'all') {
+                selectDay('');
+            } else {
+                selectDay(d);
+            }
+        });
+    });
+}
+
+function renderVisualCalendar(year, month) {
+    if (!calendarMonthTitle || !calendarDaysGrid) return;
+    calendarMonthTitle.textContent = `${MONTH_NAMES_ES[month]} ${year}`;
+    calendarDaysGrid.innerHTML = '';
+
+    const todayStr = getDaysAgoStr(0);
+
+    // Primer día del mes (Lunes=0 .. Domingo=6)
+    const firstDay = new Date(year, month, 1).getDay();
+    const startOffset = (firstDay + 6) % 7;
+
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+    // Días del mes anterior (para completar la primera semana)
+    for (let i = startOffset - 1; i >= 0; i--) {
+        const prevDayNum = daysInPrevMonth - i;
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day-cell other-month';
+        cell.innerHTML = `
+            <div class="day-header">
+                <span class="day-number">${prevDayNum}</span>
+            </div>
+        `;
+        calendarDaysGrid.appendChild(cell);
+    }
+
+    // Días del mes actual
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const dayData = calendarSummaryData[dateStr];
+        const hasData = !!dayData && dayData.total_files > 0;
+        const isToday = (dateStr === todayStr);
+        const isActive = (dateStr === currentFilterDate);
+
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day-cell';
+        cell.dataset.date = dateStr;
+
+        if (hasData) cell.classList.add('has-data');
+        if (isToday) cell.classList.add('is-today');
+        if (isActive) cell.classList.add('active-day');
+
+        let dotsHtml = '';
+        let statsHtml = '';
+
+        if (hasData) {
+            dotsHtml = '<div class="calendar-activity-dots">';
+            if (dayData.has_clips) dotsHtml += '<span class="activity-dot dot-clip" title="Clips de Eventos IA"></span>';
+            if (dayData.has_continuous) dotsHtml += '<span class="activity-dot dot-cont" title="Grabaciones 24/7"></span>';
+            if (dayData.has_snapshots) dotsHtml += '<span class="activity-dot dot-snap" title="Capturas de Fotos"></span>';
+            dotsHtml += '</div>';
+
+            const sizeDisplay = dayData.total_gb >= 1 ? `${dayData.total_gb} GB` : `${dayData.total_mb} MB`;
+            statsHtml = `<div class="calendar-day-stats" title="${dayData.total_files} grabaciones (${sizeDisplay})">${dayData.total_files} grab. &bull; ${sizeDisplay}</div>`;
         }
 
-        currentFilterHour = 'all';
+        cell.innerHTML = `
+            <div class="day-header">
+                <span class="day-number">${d}</span>
+                ${dotsHtml}
+            </div>
+            ${statsHtml}
+        `;
+
+        cell.addEventListener('click', () => {
+            selectDay(dateStr);
+        });
+
+        calendarDaysGrid.appendChild(cell);
+    }
+
+    // Días del mes siguiente (para completar la última semana)
+    const totalCells = startOffset + daysInMonth;
+    const remaining = (7 - (totalCells % 7)) % 7;
+    for (let j = 1; j <= remaining; j++) {
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day-cell other-month';
+        cell.innerHTML = `
+            <div class="day-header">
+                <span class="day-number">${j}</span>
+            </div>
+        `;
+        calendarDaysGrid.appendChild(cell);
+    }
+}
+
+function selectDay(dateStr) {
+    currentFilterDate = dateStr;
+    if (dateFilterInput) dateFilterInput.value = dateStr;
+
+    if (timelineSelectedDayBadge) {
+        if (!dateStr) {
+            timelineSelectedDayBadge.textContent = 'Todo el Historial';
+        } else if (dateStr === getDaysAgoStr(0)) {
+            timelineSelectedDayBadge.textContent = 'Hoy';
+        } else if (dateStr === getDaysAgoStr(1)) {
+            timelineSelectedDayBadge.textContent = 'Ayer';
+        } else if (dateStr === getDaysAgoStr(2)) {
+            timelineSelectedDayBadge.textContent = 'Hace 2 días';
+        } else {
+            timelineSelectedDayBadge.textContent = dateStr;
+        }
+    }
+
+    if (quickDaysGroup) {
+        quickDaysGroup.querySelectorAll('.quick-day-btn').forEach(btn => {
+            const bDate = btn.dataset.date;
+            if (bDate === 'all') {
+                btn.classList.toggle('active', !dateStr);
+            } else {
+                btn.classList.toggle('active', bDate === dateStr);
+            }
+        });
+    }
+
+    // Sincronizar mes del calendario si la fecha seleccionada no está en el mes visualizado
+    if (dateStr && dateStr.length === 10) {
+        const parts = dateStr.split('-');
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        if (!isNaN(y) && !isNaN(m) && (y !== currentCalYear || m !== currentCalMonth)) {
+            currentCalYear = y;
+            currentCalMonth = m;
+            renderVisualCalendar(currentCalYear, currentCalMonth);
+        }
+    }
+
+    highlightCalendarActiveDay();
+    updateCalendarSelectionBar();
+    updateDatePurgeBtnState();
+
+    currentFilterHour = 'all';
+    if (allHoursBtn) {
+        document.querySelectorAll('.hour-tick-btn').forEach(b => b.classList.remove('active'));
         allHoursBtn.classList.add('active');
-        updateDatePurgeBtnState();
-        buildTimelineHours();
-        renderFilteredMedia();
+    }
+
+    buildTimelineHours();
+    renderFilteredMedia();
+}
+
+function highlightCalendarActiveDay() {
+    if (!calendarDaysGrid) return;
+    calendarDaysGrid.querySelectorAll('.calendar-day-cell').forEach(cell => {
+        const cellDate = cell.dataset.date;
+        if (cellDate) {
+            cell.classList.toggle('active-day', cellDate === currentFilterDate);
+        }
     });
-});
+}
+
+function updateCalendarSelectionBar() {
+    if (!calSelectedDateText || !calSelectedDayStatsBadge) return;
+
+    if (!currentFilterDate) {
+        calSelectedDateText.textContent = 'Día seleccionado: Todo el Historial';
+        calSelectedDayStatsBadge.textContent = `${allMediaItems.length} grabaciones en total`;
+        if (calPurgeDayBtn) calPurgeDayBtn.style.display = 'none';
+        return;
+    }
+
+    const todayStr = getDaysAgoStr(0);
+    const label = currentFilterDate === todayStr ? `Hoy (${currentFilterDate})` : currentFilterDate;
+    calSelectedDateText.textContent = `Día seleccionado: ${label}`;
+
+    const dayData = calendarSummaryData[currentFilterDate];
+    if (dayData && dayData.total_files > 0) {
+        const sizeStr = dayData.total_gb >= 1 ? `${dayData.total_gb} GB` : `${dayData.total_mb} MB`;
+        calSelectedDayStatsBadge.innerHTML = `
+            <strong>${dayData.total_files} grabaciones</strong> (${sizeStr}) &bull; 
+            🎬 ${dayData.clips} clips IA &bull; 
+            📼 ${dayData.continuous} 24/7 &bull; 
+            📸 ${dayData.snapshots} fotos
+        `;
+        if (calPurgeDayBtn) {
+            calPurgeDayBtn.style.display = 'inline-block';
+            calPurgeDayBtn.textContent = `🗑️ Purgar día ${currentFilterDate}`;
+        }
+    } else {
+        calSelectedDayStatsBadge.textContent = 'Sin grabaciones en esta fecha';
+        if (calPurgeDayBtn) calPurgeDayBtn.style.display = 'none';
+    }
+}
+
+// Navegación de mes del calendario
+if (calPrevMonthBtn) {
+    calPrevMonthBtn.addEventListener('click', () => {
+        currentCalMonth--;
+        if (currentCalMonth < 0) {
+            currentCalMonth = 11;
+            currentCalYear--;
+        }
+        renderVisualCalendar(currentCalYear, currentCalMonth);
+    });
+}
+
+if (calNextMonthBtn) {
+    calNextMonthBtn.addEventListener('click', () => {
+        currentCalMonth++;
+        if (currentCalMonth > 11) {
+            currentCalMonth = 0;
+            currentCalYear++;
+        }
+        renderVisualCalendar(currentCalYear, currentCalMonth);
+    });
+}
+
+if (calTodayBtn) {
+    calTodayBtn.addEventListener('click', () => {
+        const now = new Date();
+        currentCalYear = now.getFullYear();
+        currentCalMonth = now.getMonth();
+        selectDay(getDaysAgoStr(0));
+    });
+}
+
+// Alternar Visibilidad del Calendario
+if (toggleCalendarBtn && calendarSectionCard) {
+    toggleCalendarBtn.addEventListener('click', () => {
+        const isHidden = calendarSectionCard.style.display === 'none';
+        calendarSectionCard.style.display = isHidden ? 'flex' : 'none';
+        toggleCalendarBtn.textContent = isHidden ? '📅 Ocultar Calendario' : '📅 Ver Calendario Mensual';
+        if (isHidden) {
+            renderVisualCalendar(currentCalYear, currentCalMonth);
+            updateCalendarSelectionBar();
+        }
+    });
+}
+
+// Acciones de la barra de información del calendario
+if (calFilterDayBtn) {
+    calFilterDayBtn.addEventListener('click', () => {
+        const target = document.querySelector('.media-controls-card') || mediaGrid;
+        if (target) target.scrollIntoView({ behavior: 'smooth' });
+    });
+}
+
+if (calPurgeDayBtn) {
+    calPurgeDayBtn.addEventListener('click', () => {
+        if (purgeDateBtn) purgeDateBtn.click();
+    });
+}
 
 // Selector de fecha manual (input date)
-dateFilterInput.addEventListener('change', (e) => {
-    document.querySelectorAll('#quickDaysGroup .quick-day-btn').forEach(b => b.classList.remove('active'));
-    currentFilterDate = e.target.value;
-    timelineSelectedDayBadge.textContent = currentFilterDate || 'Todo';
-    currentFilterHour = 'all';
-    allHoursBtn.classList.add('active');
-    updateDatePurgeBtnState();
-    buildTimelineHours();
-    renderFilteredMedia();
-});
+if (dateFilterInput) {
+    dateFilterInput.addEventListener('change', (e) => {
+        selectDay(e.target.value);
+    });
+}
 
-clearDateFilterBtn.addEventListener('click', () => {
-    document.querySelectorAll('#quickDaysGroup .quick-day-btn').forEach(b => b.classList.remove('active'));
-    const allBtn = document.querySelector('#quickDaysGroup .quick-day-btn[data-days-ago="all"]');
-    if (allBtn) allBtn.classList.add('active');
-    dateFilterInput.value = '';
-    currentFilterDate = '';
-    timelineSelectedDayBadge.textContent = 'Todo el Historial';
-    currentFilterHour = 'all';
-    allHoursBtn.classList.add('active');
-    updateDatePurgeBtnState();
-    buildTimelineHours();
-    renderFilteredMedia();
-});
+if (clearDateFilterBtn) {
+    clearDateFilterBtn.addEventListener('click', () => {
+        selectDay('');
+    });
+}
 
 // Botón "Todas las 24 horas"
-allHoursBtn.addEventListener('click', () => {
-    document.querySelectorAll('.hour-tick-btn').forEach(b => b.classList.remove('active'));
-    allHoursBtn.classList.add('active');
-    currentFilterHour = 'all';
-    renderFilteredMedia();
-});
+if (allHoursBtn) {
+    allHoursBtn.addEventListener('click', () => {
+        document.querySelectorAll('.hour-tick-btn').forEach(b => b.classList.remove('active'));
+        allHoursBtn.classList.add('active');
+        currentFilterHour = 'all';
+        renderFilteredMedia();
+    });
+}
 
 // Conmutador de Modo de Vista (Cuadrícula vs Lista Cronológica)
 viewModeGridBtn.addEventListener('click', () => {
@@ -816,6 +1106,7 @@ async function confirmDeleteSingle(item) {
             allMediaItems = allMediaItems.filter(x => x.id !== item.id);
             updateCounts();
             buildTimelineHours();
+            loadCalendarSummary();
             renderFilteredMedia();
             loadStorageEstimate();
         } else {
@@ -864,6 +1155,7 @@ deleteSelectedBtn.addEventListener('click', async () => {
             selectedItemIds.clear();
             updateCounts();
             buildTimelineHours();
+            loadCalendarSummary();
             renderFilteredMedia();
             loadStorageEstimate();
             alert(`✅ Se eliminaron ${data.deleted_count} archivos correctamente.`);

@@ -888,6 +888,171 @@
             border-top: 1px solid var(--border-subtle);
             gap: 0.75rem;
         }
+
+        /* Estilos del Calendario Visual de Grabaciones */
+        .calendar-section-card {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(59, 130, 246, 0.25);
+            border-radius: var(--radius-lg);
+            padding: 1.15rem;
+            margin-top: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.9rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            animation: modalFadeIn 0.2s ease-out;
+        }
+
+        .calendar-nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .calendar-month-title {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 170px;
+            text-align: center;
+            justify-content: center;
+        }
+
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 0.4rem;
+        }
+
+        .calendar-weekday-header {
+            text-align: center;
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 0.3rem 0;
+        }
+
+        .calendar-day-cell {
+            min-height: 72px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius-md);
+            padding: 0.4rem 0.5rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .calendar-day-cell.other-month {
+            opacity: 0.25;
+            cursor: default;
+        }
+
+        .calendar-day-cell.has-data {
+            background: linear-gradient(135deg, rgba(30, 58, 138, 0.35) 0%, rgba(15, 23, 42, 0.85) 100%);
+            border-color: rgba(59, 130, 246, 0.45);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        }
+
+        .calendar-day-cell.has-data:hover {
+            transform: translateY(-2px);
+            border-color: #60a5fa;
+            box-shadow: 0 6px 16px rgba(59, 130, 246, 0.35);
+        }
+
+        .calendar-day-cell.active-day {
+            border-color: #3b82f6 !important;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.45) 0%, rgba(29, 78, 216, 0.75) 100%) !important;
+            box-shadow: 0 0 16px rgba(59, 130, 246, 0.5) !important;
+        }
+
+        .calendar-day-cell.is-today .day-number {
+            color: #38bdf8;
+            font-weight: 800;
+        }
+
+        .calendar-day-cell .day-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .calendar-day-cell .day-number {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--text-dim);
+        }
+
+        .calendar-day-cell.has-data .day-number {
+            color: #fff;
+        }
+
+        .calendar-activity-dots {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .activity-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .dot-clip {
+            background: #ef4444;
+            box-shadow: 0 0 5px #ef4444;
+        }
+
+        .dot-cont {
+            background: #10b981;
+            box-shadow: 0 0 5px #10b981;
+        }
+
+        .dot-snap {
+            background: #f59e0b;
+            box-shadow: 0 0 5px #f59e0b;
+        }
+
+        .calendar-day-stats {
+            font-size: 0.65rem;
+            font-family: var(--font-mono);
+            color: #93c5fd;
+            background: rgba(0, 0, 0, 0.45);
+            padding: 0.15rem 0.35rem;
+            border-radius: var(--radius-xs);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 0.2rem;
+        }
+
+        .calendar-day-info-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.7rem 1rem;
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: var(--radius-md);
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
     </style>
 </head>
 <body>
@@ -965,7 +1130,7 @@
             </div>
         </section>
 
-        <!-- Línea de Tiempo Interactiva: Selector por Día y Hora -->
+        <!-- Línea de Tiempo Interactiva: Selector por Día y Hora con Calendario Visual -->
         <section class="timeline-section" id="timelineSection">
             <div class="timeline-header-row">
                 <div class="timeline-title-wrap">
@@ -982,15 +1147,65 @@
                     <button type="button" class="quick-day-btn" data-days-ago="all">🌐 Todo</button>
                 </div>
 
-                <!-- Selector de Vista (Cuadrícula vs Lista) -->
-                <div class="view-mode-toggle-group">
-                    <button type="button" class="view-mode-btn active" id="viewModeGridBtn" title="Vista de Tarjetas con Miniatura">🔲 Cuadrícula</button>
-                    <button type="button" class="view-mode-btn" id="viewModeListBtn" title="Vista de Lista Cronológica Detallada">📋 Lista Cronológica</button>
+                <!-- Botón de Abrir/Cerrar Calendario y Vista -->
+                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <button type="button" class="btn btn-xs btn-outline" id="toggleCalendarBtn" style="border-color: rgba(59, 130, 246, 0.5); color: #60a5fa; font-weight: 700; display: inline-flex; align-items: center; gap: 0.35rem;">
+                        📅 Ocultar Calendario
+                    </button>
+                    <div class="view-mode-toggle-group">
+                        <button type="button" class="view-mode-btn active" id="viewModeGridBtn" title="Vista de Tarjetas con Miniatura">🔲 Cuadrícula</button>
+                        <button type="button" class="view-mode-btn" id="viewModeListBtn" title="Vista de Lista Cronológica Detallada">📋 Lista Cronológica</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calendario Visual de Grabaciones por Día -->
+            <div class="calendar-section-card" id="calendarSectionCard" style="display: flex;">
+                <div class="calendar-nav-bar">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                        <button type="button" class="btn btn-xs btn-outline" id="calPrevMonthBtn">◀ Mes Anterior</button>
+                        <div class="calendar-month-title" id="calendarMonthTitle">Septiembre 2026</div>
+                        <button type="button" class="btn btn-xs btn-outline" id="calNextMonthBtn">Mes Siguiente ▶</button>
+                        <button type="button" class="btn btn-xs btn-outline" id="calTodayBtn">📅 Ir a Hoy</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.85rem; font-size: 0.78rem; flex-wrap: wrap;">
+                        <span style="display: inline-flex; align-items: center; gap: 0.3rem;"><span class="activity-dot dot-clip"></span> Clips de Eventos</span>
+                        <span style="display: inline-flex; align-items: center; gap: 0.3rem;"><span class="activity-dot dot-cont"></span> Grabación 24/7</span>
+                        <span style="display: inline-flex; align-items: center; gap: 0.3rem;"><span class="activity-dot dot-snap"></span> Capturas</span>
+                    </div>
+                </div>
+
+                <div class="calendar-grid">
+                    <div class="calendar-weekday-header">Lun</div>
+                    <div class="calendar-weekday-header">Mar</div>
+                    <div class="calendar-weekday-header">Mié</div>
+                    <div class="calendar-weekday-header">Jue</div>
+                    <div class="calendar-weekday-header">Vie</div>
+                    <div class="calendar-weekday-header">Sáb</div>
+                    <div class="calendar-weekday-header">Dom</div>
+                </div>
+                <div class="calendar-grid" id="calendarDaysGrid">
+                    <!-- Las celdas de días se generan dinámicamente con JS -->
+                </div>
+
+                <div class="calendar-day-info-bar" id="calendarSelectedDayInfo">
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <strong style="color: #60a5fa;" id="calSelectedDateText">Día seleccionado: Hoy (2026-09-07)</strong>
+                        <span id="calSelectedDayStatsBadge" style="font-size: 0.78rem; color: var(--text-muted);">Calculando...</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <button type="button" class="btn btn-xs btn-outline" id="calFilterDayBtn" style="border-color: rgba(59, 130, 246, 0.5); color: #93c5fd; font-weight: 600;">
+                            🔍 Filtrar este día
+                        </button>
+                        <button type="button" class="btn btn-xs btn-outline" id="calPurgeDayBtn" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5; font-weight: 600;">
+                            🗑️ Purgar día seleccionado
+                        </button>
+                    </div>
                 </div>
             </div>
 
             <!-- Tira de 24 Horas con Densidad de Actividad -->
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
                 <div style="font-size: 0.78rem; color: var(--text-muted);">
                     Selecciona una hora para ver sus grabaciones o pulsa "Todas las 24h":
                 </div>
