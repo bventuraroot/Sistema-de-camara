@@ -1,5 +1,16 @@
 import os
+
+# Configuración nativa y limpia para RTSP sobre TCP (soporte óptimo H.264 y HEVC/H.265 sin pantalla gris)
+# y silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
 import cv2
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    pass
 import numpy as np
 import threading
 import time
@@ -7,9 +18,6 @@ import logging
 from collections import deque
 
 logger = logging.getLogger(__name__)
-
-# Configuración nativa y limpia para RTSP sobre TCP (soporte óptimo H.264 y HEVC/H.265 sin pantalla gris)
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
 
 class VideoStream:
@@ -89,7 +97,7 @@ class VideoStream:
                                 self.frame = frame
                                 self.connected = True
 
-                        time.sleep(0.003)
+                        time.sleep(0.008)
 
                 except Exception as e:
                     logger.error(f"Error en stream_worker ({self.rtsp_url}): {e}")

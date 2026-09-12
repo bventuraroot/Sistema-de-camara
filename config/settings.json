@@ -1,11 +1,11 @@
 {
   "storage_path": "/Volumes/ExternalData/Grabaciones_Camara",
-  "motion_threshold": 11250,
-  "confidence_threshold": 0.55,
-  "ai_motion_only": false,
+  "motion_threshold": 4500,
+  "confidence_threshold": 0.5,
+  "ai_motion_only": true,
   "motion_detection": true,
   "object_detection": false,
-  "continuous_recording": true,
+  "continuous_recording": false,
   "auto_tracking": true,
   "cameras": {
     "cam1": {
@@ -19,7 +19,7 @@
       "auto_tracking": true,
       "continuous_recording": true,
       "ai_filter": false,
-      "motion_threshold": 12500,
+      "motion_threshold": 4500,
       "home_return_delay": 15.0
     },
     "cam2": {
@@ -33,7 +33,7 @@
       "auto_tracking": true,
       "continuous_recording": true,
       "ai_filter": false,
-      "motion_threshold": 12500,
+      "motion_threshold": 4500,
       "home_return_delay": 15.0
     }
   },
@@ -60,6 +60,6 @@
   "cam2_ptz_password": "admin",
   "cam2_ptz_user": "admin",
   "system_profile": "auto",
-  "max_recording_days": 45,
+  "max_recording_days": 15,
   "auto_purge_enabled": true
 }

@@ -36,6 +36,15 @@ class ObjectDetector:
 
         self.active = True
         
+        # Limitar hilos de CPU en Torch para evitar sobrecarga en computadoras modestas o Windows
+        try:
+            if torch is not None:
+                max_threads = min(4, max(1, (os.cpu_count() or 2) // 2))
+                torch.set_num_threads(max_threads)
+                logger.info(f"Hilos de CPU para PyTorch limitados a: {max_threads}")
+        except Exception:
+            pass
+
         # Selección de dispositivo acelerado (Apple Silicon MPS, NVIDIA CUDA o CPU)
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             self.device = 'mps'

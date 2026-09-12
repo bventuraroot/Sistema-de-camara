@@ -1,5 +1,14 @@
-import cv2
 import os
+
+# Silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+import cv2
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    pass
 import logging
 import time
 import shutil

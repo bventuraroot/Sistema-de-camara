@@ -32,22 +32,30 @@ class MotionDetector:
             return False, [], 0
         
         with self.lock:
-            # Reducir frame para análisis de movimiento ultra-rápido
             h, w = frame.shape[:2]
-            scale = 0.5 if w > 800 else 1.0
-            small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale) if scale != 1.0 else frame
+            if w <= 0 or h <= 0:
+                return False, [], 0
+
+            # Reducir frame a thumbnail ultra-ligero (320px) en escala de grises para máxima velocidad
+            analysis_w = 320
+            analysis_h = max(180, int(h * (320.0 / w)))
+            small_frame = cv2.resize(frame, (analysis_w, analysis_h), interpolation=cv2.INTER_NEAREST)
+            if len(small_frame.shape) == 3:
+                gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = small_frame
             
-            # Aplicar filtro gaussiano para eliminar ruido de alta frecuencia
-            blurred = cv2.GaussianBlur(small_frame, (7, 7), 0)
+            # Filtro gaussiano ligero (5x5) sobre imagen monocromática de bajo peso
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
             
-            # Substracción de fondo
+            # Substracción de fondo MOG2 acelerada
             fgmask = self.background_subtractor.apply(blurred)
             
-            # Eliminar sombras (mantener solo píxeles blancos 255)
+            # Filtrar sombras (mantener píxeles firmes 255)
             _, thresh = cv2.threshold(fgmask, 240, 255, cv2.THRESH_BINARY)
             
-            # Operaciones morfológicas para consolidar regiones
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            # Operaciones morfológicas compactas
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             dilated = cv2.dilate(thresh, kernel, iterations=2)
             
             # Encontrar contornos
@@ -57,35 +65,35 @@ class MotionDetector:
             total_motion_area = 0
             motion_boxes = []
             
-            # Normalizar umbral y área mínima en proporción a la resolución del frame (base estándar 1080p)
-            res_factor = (w * h) / (1920.0 * 1080.0)
-            min_area_scaled = max(80, int(self.min_area * res_factor * (scale * scale)))
-            threshold_scaled = max(300, int(self.threshold * res_factor * (scale * scale)))
+            scale_x = w / float(analysis_w)
+            scale_y = h / float(analysis_h)
+            area_scale = (analysis_w * analysis_h) / (1920.0 * 1080.0)
+            
+            min_area_scaled = max(25, int(self.min_area * area_scale))
+            threshold_scaled = max(60, int(self.threshold * area_scale))
             
             for contour in contours:
                 area = cv2.contourArea(contour)
                 if area < min_area_scaled:
                     continue
                 
-                total_motion_area += area
+                total_motion_area += (area * scale_x * scale_y)
                 
                 if area > threshold_scaled:
                     motion_detected = True
                     x, y, bw, bh = cv2.boundingRect(contour)
                     
-                    # Escalar de regreso al tamaño original
-                    if scale != 1.0:
-                        x = int(x / scale)
-                        y = int(y / scale)
-                        bw = int(bw / scale)
-                        bh = int(bh / scale)
+                    orig_x = int(x * scale_x)
+                    orig_y = int(y * scale_y)
+                    orig_x2 = min(w, int((x + bw) * scale_x))
+                    orig_y2 = min(h, int((y + bh) * scale_y))
                     
-                    motion_boxes.append([x, y, x + bw, y + bh])
+                    motion_boxes.append([orig_x, orig_y, orig_x2, orig_y2])
             
             self.last_motion_boxes = motion_boxes
-            self.motion_level = min(100, int((total_motion_area / max(1, w * h * 0.2)) * 100))
+            self.motion_level = min(100, int((total_motion_area / max(1, w * h * 0.15)) * 100))
             
-            return motion_detected, motion_boxes, total_motion_area
+            return motion_detected, motion_boxes, int(total_motion_area)
     
     def match_with_ai(self, motion_boxes, ai_detections):
         """

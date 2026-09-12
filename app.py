@@ -1,9 +1,19 @@
 import os
 import sys
+
+# Silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
 import time
 import socket
 import re
 import cv2
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    pass
 import numpy as np
 import json
 import threading
@@ -319,12 +329,14 @@ def camera_ai_worker(cid):
             now_t = time.time()
             is_actively_tracking = (now_t - cam.get('_last_target_seen_time', 0.0)) < 3.0
             
-            # Ejecutar IA si hay movimiento, si el filtro IA está apagado, si estamos rastreando activamente, o cada 2 cuadros
+            # Ejecutar IA de forma inteligente (bajo demanda para mínimo consumo de procesador):
+            # 1. Si hay movimiento detectado en el thumbnail
+            # 2. O si estamos rastreando activamente a un objetivo reciente (<3s)
+            # 3. O como barrido periódico ligero cada 60 cuadros (~15-20s)
             should_detect = (
-                (not motion_det or not motion_det.is_ai_filter_enabled()) or
                 motion_detected or
                 is_actively_tracking or
-                (cam.get('auto_tracking', True) and (frame_cnt % 2 == 0))
+                (frame_cnt % 60 == 0)
             )
             if object_detector and object_detector.is_active() and should_detect:
                 detections = object_detector.detect(frame)
@@ -453,7 +465,7 @@ def camera_ai_worker(cid):
                 if dur > 0:
                     cam['ai_fps'] = round((len(fps_timestamps) - 1) / dur, 1)
             
-            sleep_time = 0.12 if (motion_detected or detections) else 0.25
+            sleep_time = 0.12 if (motion_detected or is_actively_tracking) else 0.35
             time.sleep(sleep_time)
             
         except Exception as e:
@@ -612,19 +624,19 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
     stream = cam['stream']
     motion_det = cam['motion']
     
-    # Configuración de resolución y compresión optimizada (Alta nitidez y fluidez)
+    # Configuración de resolución y compresión optimizada (Bajo consumo y fluidez)
     if quality_mode == 'mobile':
         target_size = (640, 360)
         jpeg_q = 55
     elif quality_mode == 'balanced':
         target_size = (1280, 720)
-        jpeg_q = 72
+        jpeg_q = 70
     elif quality_mode == 'original':
-        target_size = (1920, 1080)
-        jpeg_q = 80
-    else:  # 'efficient' (predeterminado para PC/Laptop: 960x540 nítido, ultra fluido y balanceado)
-        target_size = (960, 540)
-        jpeg_q = 68
+        target_size = None
+        jpeg_q = 78
+    else:  # 'efficient' (predeterminado para PC/Laptop: 854x480 ultra-fluido, bajo ancho de banda y 0 lag)
+        target_size = (854, 480)
+        jpeg_q = 62
     
     last_frame_id = -1
     
@@ -650,9 +662,9 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
                 time.sleep(0.01)
                 continue
             
-            # Solo enviar si la cámara ha producido un cuadro nuevo (evita desperdicio de red)
+            # Solo enviar si la cámara ha producido un cuadro nuevo (evita bucles agresivos de CPU)
             if frame_id == last_frame_id:
-                time.sleep(0.003)
+                time.sleep(0.025)
                 continue
             
             last_frame_id = frame_id
@@ -707,7 +719,7 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
                    b'Content-Length: ' + str(len(frame_bytes)).encode() + b'\r\n\r\n' +
                    frame_bytes + b'\r\n')
             
-            time.sleep(0.001)
+            time.sleep(0.015)
     except GeneratorExit:
         pass
     except Exception as e:
@@ -787,16 +799,16 @@ def camera_live_frame(camera_id):
 
             if quality == 'mobile':
                 target_sz = (640, 360)
-                q_val = 60
+                q_val = 55
             elif quality == 'efficient':
-                target_sz = (960, 540)
-                q_val = 68
+                target_sz = (854, 480)
+                q_val = 62
             elif quality == 'balanced':
                 target_sz = (1280, 720)
-                q_val = 72
+                q_val = 70
             else:
                 target_sz = None
-                q_val = 80
+                q_val = 78
 
             if target_sz:
                 cur_h, cur_w = display_frame.shape[:2]

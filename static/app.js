@@ -294,17 +294,34 @@ if (streamQualitySelect) {
     });
 }
 
-// Reanudar suavemente transmisiones cuando el usuario vuelve a la app o desbloquea el teléfono
+// Reanudar o pausar transmisiones con la visibilidad de la pestaña (ahorro total de CPU y red en segundo plano)
 let lastVisibilityResumeTime = 0;
+let isAppPageHidden = false;
+
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
+    if (document.visibilityState === 'hidden') {
+        isAppPageHidden = true;
+        console.log('👁️ Pestaña en segundo plano: pausando transmisiones para liberar CPU y red...');
+        if (playerEngine === 'canvas') {
+            canvasLoopRunning = false;
+        } else {
+            if (videoFeedCam1 && videoFeedCam1.src && !videoFeedCam1.src.startsWith('data:')) {
+                videoFeedCam1.src = BLANK_FRAME;
+            }
+            if (videoFeedCam2 && videoFeedCam2.src && !videoFeedCam2.src.startsWith('data:')) {
+                videoFeedCam2.src = BLANK_FRAME;
+            }
+        }
+    } else if (document.visibilityState === 'visible') {
+        isAppPageHidden = false;
         const now = Date.now();
-        if (now - lastVisibilityResumeTime > 2000) {
+        if (now - lastVisibilityResumeTime > 1500) {
             lastVisibilityResumeTime = now;
             lastCam1FrameTime = now;
             lastCam2FrameTime = now;
-            console.log('📱 Dispositivo reanudado: refrescando flujos de video para tiempo real sin retraso...');
+            console.log('👁️ Pestaña activa: reanudando flujos de video en tiempo real...');
             if (playerEngine === 'canvas') {
+                canvasLoopRunning = true;
                 canvasFetching.cam1 = false;
                 canvasFetching.cam2 = false;
                 requestAnimationFrame(() => fetchCanvasFrame('cam1'));
