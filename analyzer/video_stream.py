@@ -70,11 +70,12 @@ class VideoStream:
     def _start_stream(self):
         def stream_worker():
             # Parámetros nativos de timeout de OpenCV para evitar cuelgues de 30s en Windows
+            # 10s da suficiente margen para handshake RTSP y esperar el primer I-frame sobre WiFi
             open_params = []
             if hasattr(cv2, 'CAP_PROP_OPEN_TIMEOUT_MSEC'):
-                open_params.extend([cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000])
+                open_params.extend([cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000])
             if hasattr(cv2, 'CAP_PROP_READ_TIMEOUT_MSEC'):
-                open_params.extend([cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000])
+                open_params.extend([cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000])
 
             while self.running:
                 try:
@@ -128,8 +129,10 @@ class VideoStream:
                     while self.running and self.cap:
                         ret, frame = self.cap.read()
                         if not ret or frame is None or getattr(frame, 'size', 0) == 0:
-                            if time.time() - self.last_frame_time > 5.0:
-                                logger.warning(f"Pérdida de señal RTSP (timeout de 5s sin fotogramas): {self.rtsp_url}")
+                            # Antes del primer frame, permitir hasta 15s para que la cámara emita su fotograma clave (I-frame / IDR)
+                            timeout_limit = 6.0 if steady_frames > 0 else 15.0
+                            if time.time() - self.last_frame_time > timeout_limit:
+                                logger.warning(f"Pérdida de señal RTSP (timeout de {timeout_limit}s sin fotogramas): {self.rtsp_url}")
                                 if not self.using_fallback and steady_frames < 30:
                                     self.failed_primary_attempts += 1
                                     logger.warning(f"⚠️ Fallo temprano en stream primario (intentos: {self.failed_primary_attempts}/2)")
@@ -142,8 +145,8 @@ class VideoStream:
                         self.frame_count += 1
                         steady_frames += 1
 
-                        # Resetear contador de fallos solo si el stream ha estado transmitiendo de forma estable (>15s y >50 frames)
-                        if not self.using_fallback and self.failed_primary_attempts > 0 and steady_frames > 50 and (now - connect_time > 15.0):
+                        # Resetear contador de fallos tan pronto como el stream envíe frames estables
+                        if not self.using_fallback and self.failed_primary_attempts > 0 and steady_frames >= 15:
                             self.failed_primary_attempts = 0
 
                         self._fps_timestamps.append(now)
@@ -183,21 +186,22 @@ class VideoStream:
     def read(self):
         """Retorna el frame más reciente de manera instantánea y segura."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 5.0):
+            if self.frame is not None and (time.time() - self.last_frame_time < 6.0):
                 return self.frame
             return None
 
     def read_with_count(self):
         """Retorna el frame más reciente junto con su número de secuencia."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 5.0):
+            if self.frame is not None and (time.time() - self.last_frame_time < 6.0):
                 return self.frame, self.frame_count
             return None, 0
 
     def is_connected(self):
         """Verifica si la cámara está activa y transmitiendo frames en tiempo real."""
         with self.lock:
-            return self.connected and (time.time() - self.last_frame_time < 5.0)
+            grace = 6.0 if self.frame_count > 0 else 15.0
+            return self.connected and (time.time() - self.last_frame_time < grace)
 
     def get_resolution(self):
         """Retorna la resolución nativa actual del stream."""
