@@ -1,8 +1,15 @@
 import os
 
-# Configuración nativa y limpia para RTSP sobre TCP (soporte óptimo H.264 y HEVC/H.265 sin pantalla gris)
-# y silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+# Configuración de alto rendimiento para RTSP sobre TCP (soporte óptimo H.264 y HEVC/H.265 sin latencia)
+# Conexión instantánea (<1s) reduciendo analyzeduration y probesize de FFmpeg
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp"
+    "|analyzeduration;500000"
+    "|probesize;500000"
+    "|fflags;nobuffer"
+    "|max_delay;500000"
+    "|stimeout;5000000"
+)
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
@@ -37,6 +44,8 @@ class VideoStream:
         self.last_frame_time = 0
         self._fps_timestamps = deque(maxlen=30)
         self.running = True
+        self.failed_primary_attempts = 0
+        self.last_fallback_probe_time = 0
         self._worker_thread = None
         self._start_stream()
 
@@ -44,39 +53,52 @@ class VideoStream:
         def stream_worker():
             while self.running:
                 try:
-                    logger.info(f"Conectando a RTSP: {self.rtsp_url}")
-                    
+                    # Si la URL primaria falló 2 veces y tenemos fallback, activar stream de respaldo
+                    if self.failed_primary_attempts >= 2 and self.fallback_url and not self.using_fallback:
+                        logger.warning(f"⚠️ Cambiando temporalmente a stream de respaldo (fallback): {self.fallback_url}")
+                        self.rtsp_url = self.fallback_url
+                        self.using_fallback = True
+                        self.last_fallback_probe_time = time.time()
+                    # Si estamos en fallback, intentar volver al stream primario (1080p nativo) cada 45 segundos
+                    elif self.using_fallback and (time.time() - self.last_fallback_probe_time > 45.0):
+                        logger.info(f"🔄 Reintentando reconectar a stream primario (1080p): {self.primary_url}")
+                        self.rtsp_url = self.primary_url
+                        self.using_fallback = False
+                        self.last_fallback_probe_time = time.time()
+
+                    logger.info(f"Conectando a RTSP: {self.rtsp_url} (fallback={self.using_fallback})")
+                    t0 = time.time()
                     self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
                     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
                     if not self.cap.isOpened():
-                        logger.warning(f"No se pudo conectar al stream RTSP ({self.rtsp_url}). Reintentando en 2s...")
+                        elapsed = round(time.time() - t0, 2)
+                        logger.warning(f"No se pudo conectar al stream RTSP ({self.rtsp_url}, {elapsed}s). Reintentando...")
+                        if not self.using_fallback:
+                            self.failed_primary_attempts += 1
                         with self.lock:
                             self.connected = False
                             self.fps = 0.0
-                        time.sleep(2)
+                        time.sleep(1.0)
                         continue
 
-                    logger.info(f"✅ Conexión RTSP establecida exitosamente: {self.rtsp_url}")
+                    elapsed = round(time.time() - t0, 2)
+                    logger.info(f"✅ Conexión RTSP establecida en {elapsed}s: {self.rtsp_url} (fallback={self.using_fallback})")
+                    if not self.using_fallback:
+                        self.failed_primary_attempts = 0
+
                     with self.lock:
                         self.connected = True
                     self.last_frame_time = time.time()
 
-                    while self.running and self.connected and self.cap:
-                        ret = self.cap.grab()
-                        if not ret:
-                            if time.time() - self.last_frame_time > 15.0:
-                                logger.warning(f"Pérdida de señal RTSP (timeout de 15s en grab): {self.rtsp_url}")
-                                break
-                            time.sleep(0.01)
-                            continue
-
-                        ret, frame = self.cap.retrieve()
+                    # Bucle continuo con lectura atómica directa (evita desincronización de slices HEVC / H.265)
+                    while self.running and self.cap:
+                        ret, frame = self.cap.read()
                         if not ret or frame is None or getattr(frame, 'size', 0) == 0:
-                            if time.time() - self.last_frame_time > 15.0:
-                                logger.warning(f"Fallo al recuperar frame RTSP (timeout de 15s en retrieve): {self.rtsp_url}")
+                            if time.time() - self.last_frame_time > 5.0:
+                                logger.warning(f"Pérdida de señal RTSP (timeout de 5s sin fotogramas): {self.rtsp_url}")
                                 break
-                            time.sleep(0.01)
+                            time.sleep(0.015)
                             continue
 
                         now = time.time()
@@ -96,11 +118,11 @@ class VideoStream:
                                 self.height = h
                                 self.frame = frame
                                 self.connected = True
-                        # self.cap.grab() ya sincroniza de manera natural con la tasa de cuadros de la cámara RTSP
-                        # No agregar sleep aquí para evitar que se acumulen paquetes en el socket TCP (causa de timeout en 1080p)
 
                 except Exception as e:
                     logger.error(f"Error en stream_worker ({self.rtsp_url}): {e}")
+                    if not self.using_fallback:
+                        self.failed_primary_attempts += 1
 
                 finally:
                     with self.lock:
@@ -112,29 +134,29 @@ class VideoStream:
                         except Exception:
                             pass
                         self.cap = None
-                    time.sleep(2.0)
+                    time.sleep(1.0)
 
-        self._worker_thread = threading.Thread(target=stream_worker, daemon=True, name=f"stream-{self.rtsp_url[:20]}")
+        self._worker_thread = threading.Thread(target=stream_worker, daemon=True, name=f"stream-{self.primary_url[:20]}")
         self._worker_thread.start()
 
     def read(self):
         """Retorna el frame más reciente de manera instantánea y segura."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 12.0):
+            if self.frame is not None and (time.time() - self.last_frame_time < 5.0):
                 return self.frame
             return None
 
     def read_with_count(self):
         """Retorna el frame más reciente junto con su número de secuencia."""
         with self.lock:
-            if self.frame is not None and (time.time() - self.last_frame_time < 12.0):
+            if self.frame is not None and (time.time() - self.last_frame_time < 5.0):
                 return self.frame, self.frame_count
             return None, 0
 
     def is_connected(self):
         """Verifica si la cámara está activa y transmitiendo frames en tiempo real."""
         with self.lock:
-            return self.connected and (time.time() - self.last_frame_time < 12.0)
+            return self.connected and (time.time() - self.last_frame_time < 5.0)
 
     def get_resolution(self):
         """Retorna la resolución nativa actual del stream."""
@@ -144,7 +166,7 @@ class VideoStream:
     def get_fps(self):
         """Retorna los FPS calculados del stream."""
         with self.lock:
-            if not self.connected or (time.time() - self.last_frame_time > 8.0):
+            if not self.connected or (time.time() - self.last_frame_time > 4.0):
                 return 0.0
             return self.fps
 
@@ -162,3 +184,4 @@ class VideoStream:
             except Exception:
                 pass
             self.cap = None
+

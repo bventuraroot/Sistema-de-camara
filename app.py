@@ -3,8 +3,14 @@ import sys
 
 # Silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
-os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp"
+    "|analyzeduration;500000"
+    "|probesize;500000"
+    "|fflags;nobuffer"
+    "|max_delay;500000"
+    "|stimeout;5000000"
+)
 
 import time
 import socket
@@ -789,36 +795,43 @@ def camera_live_frame(camera_id):
 
     target_sz, q_val, quality_key = resolve_quality_params(request.args.get('quality', '360p'))
 
+    cached_bytes = None
+    dets = None
+    mboxes = None
     with cam['lock']:
         if cam.get('_last_jpeg_fid') == frame_id and quality_key in cam.get('_last_jpeg_cache', {}):
-            frame_bytes = cam['_last_jpeg_cache'][quality_key]
+            cached_bytes = cam['_last_jpeg_cache'][quality_key]
         else:
             dets = list(cam.get('cached_detections', []))
             mboxes = list(cam.get('cached_motion_boxes', []))
-            motion_det = cam.get('motion')
-            
-            has_motion_draw = bool(motion_det and motion_det.is_active() and mboxes)
-            has_ai_draw = bool(object_detector and object_detector.is_active() and dets)
-            
-            if has_motion_draw or has_ai_draw:
-                display_frame = frame.copy()
-                if has_motion_draw:
-                    display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
-                if has_ai_draw:
-                    display_frame = object_detector.draw_detections(display_frame, dets)
-            else:
-                display_frame = frame
 
-            if target_sz:
-                cur_h, cur_w = display_frame.shape[:2]
-                if cur_w > target_sz[0] or cur_h > target_sz[1]:
-                    display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_LINEAR)
+    if cached_bytes is not None:
+        frame_bytes = cached_bytes
+    else:
+        motion_det = cam.get('motion')
+        has_motion_draw = bool(motion_det and motion_det.is_active() and mboxes)
+        has_ai_draw = bool(object_detector and object_detector.is_active() and dets)
+        
+        if has_motion_draw or has_ai_draw:
+            display_frame = frame.copy()
+            if has_motion_draw:
+                display_frame = motion_det.draw_motion_overlay(display_frame, mboxes)
+            if has_ai_draw:
+                display_frame = object_detector.draw_detections(display_frame, dets)
+        else:
+            display_frame = frame
 
-            ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, q_val, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
-            if not ret:
-                return ('', 500)
+        if target_sz:
+            cur_h, cur_w = display_frame.shape[:2]
+            if cur_w > target_sz[0] or cur_h > target_sz[1]:
+                display_frame = cv2.resize(display_frame, target_sz, interpolation=cv2.INTER_LINEAR)
 
-            frame_bytes = buf.tobytes()
+        ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, q_val, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
+        if not ret:
+            return ('', 500)
+
+        frame_bytes = buf.tobytes()
+        with cam['lock']:
             if cam.get('_last_jpeg_fid') != frame_id:
                 cam['_last_jpeg_fid'] = frame_id
                 cam['_last_jpeg_cache'] = {}
