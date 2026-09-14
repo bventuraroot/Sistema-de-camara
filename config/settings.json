@@ -1,7 +1,7 @@
 {
   "storage_path": "/Volumes/ExternalData/Grabaciones_Camara",
-  "motion_threshold": 4500,
-  "confidence_threshold": 0.5,
+  "motion_threshold": 11000,
+  "confidence_threshold": 0.6,
   "ai_motion_only": true,
   "motion_detection": true,
   "object_detection": false,
@@ -24,7 +24,7 @@
     },
     "cam2": {
       "id": "cam2",
-      "name": "C\u00e1mara 2 (iCam365)",
+      "name": "C\u00e1mara 2 (192.168.1.18)",
       "rtsp_url": "rtsp://admin:admin@192.168.1.18:554/live/ch0",
       "fallback_url": "rtsp://admin:admin@192.168.1.18:554/0/av1",
       "ptz": true,
@@ -38,7 +38,7 @@
     }
   },
   "motion_schedule": {
-    "enabled": false,
+    "enabled": true,
     "start_time": "22:00",
     "end_time": "06:00",
     "days": [
