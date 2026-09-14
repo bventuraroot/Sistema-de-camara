@@ -85,8 +85,9 @@ class VideoStream:
                         self.rtsp_url = self.fallback_url
                         self.using_fallback = True
                         self.last_fallback_probe_time = time.time()
-                    # Si estamos en fallback, intentar volver al stream primario (1080p nativo) cada 60 segundos
-                    elif self.using_fallback and (time.time() - self.last_fallback_probe_time > 60.0):
+                    # Si estamos en fallback, reintentar volver al stream primario (1080p) cada 300s (5 min)
+                    # Esto evita el molesto ciclo de congelamiento cada 60s cuando la red de subida está saturada
+                    elif self.using_fallback and (time.time() - self.last_fallback_probe_time > 300.0):
                         logger.info(f"🔄 Reintentando reconectar a stream primario (1080p): {self.primary_url}")
                         self.rtsp_url = self.primary_url
                         self.using_fallback = False
