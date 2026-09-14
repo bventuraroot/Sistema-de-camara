@@ -2,15 +2,30 @@ import os
 import sys
 
 # Silenciar salidas ruidosas del decodificador FFmpeg / OpenCV a stderr
-os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+CAPTURE_OPTIONS = (
     "rtsp_transport;tcp"
-    "|analyzeduration;500000"
-    "|probesize;500000"
+    "|analyzeduration;1000000"
+    "|probesize;1048576"
+    "|buffer_size;2097152"
     "|fflags;nobuffer"
     "|max_delay;500000"
+    "|timeout;5000000"
     "|stimeout;5000000"
 )
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = CAPTURE_OPTIONS
+
+if sys.platform == "win32":
+    import ctypes
+    for crt_name in ("msvcrt", "ucrtbase"):
+        try:
+            crt = getattr(ctypes.cdll, crt_name)
+            crt._putenv(f"OPENCV_FFMPEG_CAPTURE_OPTIONS={CAPTURE_OPTIONS}".encode('ascii'))
+            crt._putenv(b"OPENCV_FFMPEG_LOGLEVEL=-8")
+            crt._putenv(b"OPENCV_LOG_LEVEL=ERROR")
+        except Exception:
+            pass
 
 import time
 import socket
@@ -114,9 +129,10 @@ def get_all_settings():
             'cam2': {
                 'id': 'cam2',
                 'name': 'Cámara 2 (iCam365)',
-                'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch1'),
+                'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch0'),
+                'fallback_url': os.getenv('FALLBACK_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/0/av1'),
                 'ptz': True,
-                'home_return_delay': 8.0
+                'home_return_delay': 15.0
             }
         }
     }
