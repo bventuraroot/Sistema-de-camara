@@ -575,6 +575,50 @@ body {
     font-family: monospace;
 }
 
+.cam-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cam-quality-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-sm);
+    padding: 0.15rem 0.4rem;
+    transition: all 0.2s ease;
+}
+
+.cam-quality-control:hover {
+    border-color: var(--primary);
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+}
+
+.cam-q-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.cam-quality-select {
+    background: transparent;
+    color: #38bdf8;
+    border: none;
+    font-size: 0.72rem;
+    font-weight: 700;
+    outline: none;
+    cursor: pointer;
+    padding: 0 0.1rem;
+}
+
+.cam-quality-select option {
+    background: #0f172a;
+    color: #f8fafc;
+}
+
 .btn-expand-cam {
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.12);

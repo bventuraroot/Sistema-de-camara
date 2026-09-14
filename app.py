@@ -489,6 +489,9 @@ def camera_recording_feeder(cid):
             is_event = (rec.active_clip is not None)
             
             if is_cont or is_event:
+                # GARANTÍA DE MÁXIMA RESOLUCIÓN: El fotograma se extrae directamente de la cámara (VideoStream)
+                # sin aplicar ningún escalado web. Las grabaciones continuas 24/7 y clips de eventos SIEMPRE se graban
+                # en su resolución nativa completa (1080p para Cámara 2).
                 frame, frame_id = stream.read_with_count()
                 if frame is not None and frame_id != last_fid:
                     last_fid = frame_id
@@ -614,30 +617,41 @@ def init_components():
     
     logger.info("Sistema Multi-Cámara (Tuya + iCam365) completamente inicializado.")
 
-# ----------------- RUTAS DE VIDEO MJPEG -----------------
+# ----------------- RUTAS DE VIDEO MJPEG Y RESOLUCIONES -----------------
 
-def generate_frames(camera_id='cam1', quality_mode='efficient'):
+def resolve_quality_params(quality_name):
+    """
+    Mapea el modo o resolución solicitada a sus parámetros de escalado y compresión.
+    Soporta explícitamente:
+      - '360p' (o 'mobile'): (640, 360), jpeg_q=55 (~20 KB/frame, ultraliviano para WiFi/móvil)
+      - '480p' (o 'efficient'): (854, 480), jpeg_q=62 (~40 KB/frame, balance ideal fluidez/nitidez)
+      - '720p' (o 'balanced'): (1280, 720), jpeg_q=70 (~80 KB/frame, alta definición)
+      - '1080p' (o 'original'): None (nativo 1080p en Cam 2), jpeg_q=75 (~180 KB/frame)
+    """
+    q = (quality_name or '').lower().strip()
+    if q in ('360p', 'mobile', 'low', '360'):
+        return (640, 360), 55, '360p'
+    elif q in ('480p', 'efficient', 'med', 'medium', '480', '540p', '540'):
+        return (854, 480), 62, '480p'
+    elif q in ('720p', 'balanced', 'hd', '720'):
+        return (1280, 720), 70, '720p'
+    elif q in ('1080p', 'original', 'fhd', 'fullhd', '1080'):
+        return None, 75, '1080p'
+    else:
+        # Predeterminado para visualización fluida sin lag ni saturación de red
+        return (854, 480), 62, '480p'
+
+def generate_frames(camera_id='cam1', quality_mode='480p'):
     """
     Genera el flujo de cuadros MJPEG en tiempo real, ultra fluido y con latencia cercana a cero.
+    NOTA CRÍTICA: Este flujo es EXCLUSIVAMENTE para la visualización en navegadores web.
+    Las grabaciones continuas (24/7) y clips de eventos se realizan SIEMPRE a máxima resolución nativa (1080p).
     """
     cam = cameras.get(camera_id, cameras['cam1'])
     stream = cam['stream']
     motion_det = cam['motion']
     
-    # Configuración de resolución y compresión optimizada (Bajo consumo y fluidez)
-    if quality_mode == 'mobile':
-        target_size = (640, 360)
-        jpeg_q = 55
-    elif quality_mode == 'balanced':
-        target_size = (1280, 720)
-        jpeg_q = 70
-    elif quality_mode == 'original':
-        target_size = None
-        jpeg_q = 78
-    else:  # 'efficient' (predeterminado para PC/Laptop: 854x480 ultra-fluido, bajo ancho de banda y 0 lag)
-        target_size = (854, 480)
-        jpeg_q = 62
-    
+    target_size, jpeg_q, quality_key = resolve_quality_params(quality_mode)
     last_frame_id = -1
     
     try:
@@ -664,7 +678,7 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
             
             # Solo enviar si la cámara ha producido un cuadro nuevo (evita bucles agresivos de CPU)
             if frame_id == last_frame_id:
-                time.sleep(0.025)
+                time.sleep(0.012)
                 continue
             
             last_frame_id = frame_id
@@ -674,8 +688,8 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
             dets = None
             mboxes = None
             with cam['lock']:
-                if cam.get('_last_jpeg_fid') == frame_id and quality_mode in cam.get('_last_jpeg_cache', {}):
-                    cached_bytes = cam['_last_jpeg_cache'][quality_mode]
+                if cam.get('_last_jpeg_fid') == frame_id and quality_key in cam.get('_last_jpeg_cache', {}):
+                    cached_bytes = cam['_last_jpeg_cache'][quality_key]
                 else:
                     dets = cam.get('cached_detections')
                     mboxes = cam.get('cached_motion_boxes')
@@ -711,7 +725,7 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
                     if cam.get('_last_jpeg_fid') != frame_id:
                         cam['_last_jpeg_fid'] = frame_id
                         cam['_last_jpeg_cache'] = {}
-                    cam['_last_jpeg_cache'][quality_mode] = frame_bytes
+                    cam['_last_jpeg_cache'][quality_key] = frame_bytes
             
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n'
@@ -719,7 +733,7 @@ def generate_frames(camera_id='cam1', quality_mode='efficient'):
                    b'Content-Length: ' + str(len(frame_bytes)).encode() + b'\r\n\r\n' +
                    frame_bytes + b'\r\n')
             
-            time.sleep(0.015)
+            time.sleep(0.008)
     except GeneratorExit:
         pass
     except Exception as e:
@@ -730,8 +744,8 @@ def video_feed_cam(camera_id):
     if camera_id not in cameras:
         camera_id = 'cam1'
     quality_mode = request.args.get('quality', '').lower()
-    if not quality_mode or quality_mode not in ('mobile', 'efficient', 'balanced', 'original'):
-        quality_mode = 'efficient'
+    if not quality_mode:
+        quality_mode = '480p'
     
     return Response(
         generate_frames(camera_id, quality_mode=quality_mode),
@@ -752,7 +766,7 @@ def video_feed():
 def camera_live_frame(camera_id):
     """
     Entrega el fotograma individual más reciente en memoria.
-    Diseñado para clientes móviles con bucle Canvas (latencia estricta de 30-50ms sin acumulación de búfer).
+    Diseñado para clientes móviles y Cero Lag con bucle Canvas (latencia estricta de 30-50ms sin acumulación de búfer).
     """
     if camera_id not in cameras:
         camera_id = 'cam1'
@@ -773,13 +787,11 @@ def camera_live_frame(camera_id):
         except ValueError:
             pass
 
-    quality = request.args.get('quality', 'mobile').lower()
-    if quality not in ('mobile', 'efficient', 'balanced', 'original'):
-        quality = 'mobile'
+    target_sz, q_val, quality_key = resolve_quality_params(request.args.get('quality', '360p'))
 
     with cam['lock']:
-        if cam.get('_last_jpeg_fid') == frame_id and quality in cam.get('_last_jpeg_cache', {}):
-            frame_bytes = cam['_last_jpeg_cache'][quality]
+        if cam.get('_last_jpeg_fid') == frame_id and quality_key in cam.get('_last_jpeg_cache', {}):
+            frame_bytes = cam['_last_jpeg_cache'][quality_key]
         else:
             dets = list(cam.get('cached_detections', []))
             mboxes = list(cam.get('cached_motion_boxes', []))
@@ -797,19 +809,6 @@ def camera_live_frame(camera_id):
             else:
                 display_frame = frame
 
-            if quality == 'mobile':
-                target_sz = (640, 360)
-                q_val = 55
-            elif quality == 'efficient':
-                target_sz = (854, 480)
-                q_val = 62
-            elif quality == 'balanced':
-                target_sz = (1280, 720)
-                q_val = 70
-            else:
-                target_sz = None
-                q_val = 78
-
             if target_sz:
                 cur_h, cur_w = display_frame.shape[:2]
                 if cur_w > target_sz[0] or cur_h > target_sz[1]:
@@ -823,7 +822,7 @@ def camera_live_frame(camera_id):
             if cam.get('_last_jpeg_fid') != frame_id:
                 cam['_last_jpeg_fid'] = frame_id
                 cam['_last_jpeg_cache'] = {}
-            cam['_last_jpeg_cache'][quality] = frame_bytes
+            cam['_last_jpeg_cache'][quality_key] = frame_bytes
 
     return Response(
         frame_bytes,

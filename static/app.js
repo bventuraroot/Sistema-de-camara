@@ -73,15 +73,74 @@ if (!playerEngine || (!isMobileDevice && playerEngine === 'canvas')) {
     localStorage.setItem('player_engine', 'mjpeg');
 }
 
-// En MÓVIL: forzar 'mobile' para decodificación suave
-let currentStreamQuality;
-if (isMobileDevice) {
-    currentStreamQuality = 'mobile';
-    localStorage.removeItem('camera_stream_quality');
-} else {
-    currentStreamQuality = localStorage.getItem('camera_stream_quality') || 'efficient';
+// Gestión de resolución en tiempo real (por cámara y global)
+function normalizeQuality(q) {
+    if (!q) return '480p';
+    q = q.toLowerCase().trim();
+    if (q === 'mobile' || q === '360' || q === '360p' || q === 'low') return '360p';
+    if (q === 'efficient' || q === '480' || q === '480p' || q === '540' || q === '540p' || q === 'med') return '480p';
+    if (q === 'balanced' || q === '720' || q === '720p' || q === 'hd') return '720p';
+    if (q === 'original' || q === '1080' || q === '1080p' || q === 'fhd') return '1080p';
+    return '480p';
 }
+
+function getCameraQuality(cid) {
+    if (isMobileDevice) return '360p';
+    const key = `camera_stream_quality_${cid}`;
+    const saved = localStorage.getItem(key);
+    if (saved) return normalizeQuality(saved);
+    
+    // Si hay una preferencia global previa, respetarla
+    const globalQ = localStorage.getItem('camera_stream_quality');
+    if (globalQ) return normalizeQuality(globalQ);
+
+    // Por defecto seguro: 480p para fluidez total sin saturación de red WiFi
+    return '480p';
+}
+
+function setCameraQuality(cid, quality) {
+    const norm = normalizeQuality(quality);
+    localStorage.setItem(`camera_stream_quality_${cid}`, norm);
+    console.log(`📶 [${cid}] Calidad en vivo establecida a: ${norm}`);
+    
+    const sel = document.getElementById(`qualitySelect${cid.charAt(0).toUpperCase() + cid.slice(1)}`);
+    if (sel && sel.value !== norm) {
+        sel.value = norm;
+    }
+    
+    updateGlobalQualityDropdown();
+    refreshCameraFeed(cid, true);
+}
+
+function setGlobalQuality(quality) {
+    const norm = normalizeQuality(quality);
+    localStorage.setItem('camera_stream_quality', norm);
+    localStorage.setItem('camera_stream_quality_cam1', norm);
+    localStorage.setItem('camera_stream_quality_cam2', norm);
+    
+    const sel1 = document.getElementById('qualitySelectCam1');
+    if (sel1) sel1.value = norm;
+    const sel2 = document.getElementById('qualitySelectCam2');
+    if (sel2) sel2.value = norm;
+    
+    console.log(`📶 Calidad global en vivo establecida a: ${norm}`);
+    refreshActiveFeeds(true);
+}
+
 const streamQualitySelect = document.getElementById('streamQualitySelect');
+const qualitySelectCam1 = document.getElementById('qualitySelectCam1');
+const qualitySelectCam2 = document.getElementById('qualitySelectCam2');
+
+function updateGlobalQualityDropdown() {
+    if (!streamQualitySelect) return;
+    const q1 = getCameraQuality('cam1');
+    const q2 = getCameraQuality('cam2');
+    if (q1 === q2) {
+        streamQualitySelect.value = q1;
+    } else {
+        streamQualitySelect.value = '';
+    }
+}
 
 let canvasLoopRunning = false;
 let canvasFid = { cam1: 0, cam2: 0 };
@@ -109,9 +168,10 @@ async function fetchCanvasFrame(cid) {
 
     try {
         const lastFid = canvasFid[cid] || 0;
+        const q = getCameraQuality(cid);
         const url = lastFid > 0
-            ? `/api/camera/${cid}/live_frame?quality=${currentStreamQuality}&since_fid=${lastFid}&t=${Date.now()}`
-            : `/api/camera/${cid}/live_frame?quality=${currentStreamQuality}&t=${Date.now()}`;
+            ? `/api/camera/${cid}/live_frame?quality=${q}&since_fid=${lastFid}&t=${Date.now()}`
+            : `/api/camera/${cid}/live_frame?quality=${q}&t=${Date.now()}`;
 
         const res = await fetch(url, { cache: 'no-store', signal: abortCtrl.signal });
         clearTimeout(timeoutId);
@@ -235,7 +295,24 @@ if (btnToggleEngine) {
 }
 
 function getFeedUrl(cid) {
-    return `/video_feed/${cid}?quality=${currentStreamQuality}&t=${Date.now()}`;
+    const q = getCameraQuality(cid);
+    return `/video_feed/${cid}?quality=${q}&t=${Date.now()}`;
+}
+
+function refreshCameraFeed(cid, force = false) {
+    if (playerEngine === 'canvas') {
+        if (canvasLoopRunning) {
+            canvasFetching[cid] = false;
+            requestAnimationFrame(() => fetchCanvasFrame(cid));
+        }
+        return;
+    }
+    const imgEl = cid === 'cam1' ? videoFeedCam1 : videoFeedCam2;
+    if (imgEl && (force || !imgEl.src || imgEl.src === BLANK_FRAME || !imgEl.src.includes(`/video_feed/${cid}`))) {
+        imgEl.src = getFeedUrl(cid);
+    }
+    const reloadBtn = cid === 'cam1' ? reloadCam1Btn : reloadCam2Btn;
+    if (reloadBtn) reloadBtn.style.display = 'none';
 }
 
 function refreshActiveFeeds(force = false) {
@@ -284,14 +361,33 @@ function refreshActiveFeeds(force = false) {
     if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
 }
 
-if (streamQualitySelect) {
-    streamQualitySelect.value = currentStreamQuality;
-    streamQualitySelect.addEventListener('change', () => {
-        currentStreamQuality = streamQualitySelect.value;
-        localStorage.setItem('camera_stream_quality', currentStreamQuality);
-        console.log(`📶 Calidad de transmisión cambiada a: ${currentStreamQuality}`);
-        refreshActiveFeeds(true);
-    });
+function initQualityControls() {
+    const q1 = getCameraQuality('cam1');
+    const q2 = getCameraQuality('cam2');
+    
+    if (qualitySelectCam1) {
+        qualitySelectCam1.value = q1;
+        qualitySelectCam1.addEventListener('change', () => {
+            setCameraQuality('cam1', qualitySelectCam1.value);
+        });
+    }
+    
+    if (qualitySelectCam2) {
+        qualitySelectCam2.value = q2;
+        qualitySelectCam2.addEventListener('change', () => {
+            setCameraQuality('cam2', qualitySelectCam2.value);
+        });
+    }
+    
+    updateGlobalQualityDropdown();
+    
+    if (streamQualitySelect) {
+        streamQualitySelect.addEventListener('change', () => {
+            if (streamQualitySelect.value) {
+                setGlobalQuality(streamQualitySelect.value);
+            }
+        });
+    }
 }
 
 // Reanudar o pausar transmisiones con la visibilidad de la pestaña (ahorro total de CPU y red en segundo plano)
@@ -428,37 +524,42 @@ let cam1FailCount = 0;
 let cam2FailCount = 0;
 let lastCam1FrameTime = Date.now();
 let lastCam2FrameTime = Date.now();
+let cam1ErrorTimer = null;
+let cam2ErrorTimer = null;
 
 function reloadCam1() {
     if (!videoFeedCam1 || isRecoveringCam1) return;
+    if (isAppPageHidden) return; // No reconectar si la pestaña está oculta
     if (isMobileDevice && currentViewMode === 'cam2') return;
     isRecoveringCam1 = true;
     lastCam1FrameTime = Date.now();
     if (reloadCam1Btn) reloadCam1Btn.style.display = 'none';
     console.log('🔄 Reconectando Cámara 1...');
     videoFeedCam1.src = getFeedUrl('cam1');
-    setTimeout(() => { isRecoveringCam1 = false; }, 2000);
+    setTimeout(() => { isRecoveringCam1 = false; }, 2500);
 }
 
 function reloadCam2() {
     if (!videoFeedCam2 || isRecoveringCam2) return;
+    if (isAppPageHidden) return; // No reconectar si la pestaña está oculta
     if (isMobileDevice && currentViewMode === 'cam1') return;
     isRecoveringCam2 = true;
     lastCam2FrameTime = Date.now();
     if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
     console.log('🔄 Reconectando Cámara 2...');
     videoFeedCam2.src = getFeedUrl('cam2');
-    setTimeout(() => { isRecoveringCam2 = false; }, 2000);
+    setTimeout(() => { isRecoveringCam2 = false; }, 2500);
 }
 
 if (videoFeedCam1) {
     videoFeedCam1.addEventListener('error', () => {
-        if (!videoFeedCam1.src || videoFeedCam1.src.startsWith('data:')) return;
+        if (!videoFeedCam1.src || videoFeedCam1.src.startsWith('data:') || isAppPageHidden) return;
         cam1FailCount++;
         if (cam1FailCount >= 3 && reloadCam1Btn && (!isMobileDevice || currentViewMode !== 'cam2')) {
             reloadCam1Btn.style.display = 'inline-flex';
         }
-        setTimeout(reloadCam1, 2000);
+        clearTimeout(cam1ErrorTimer);
+        cam1ErrorTimer = setTimeout(reloadCam1, Math.min(6000, 2000 * Math.max(1, cam1FailCount - 2)));
     });
     videoFeedCam1.addEventListener('load', () => {
         cam1FailCount = 0;
@@ -470,12 +571,13 @@ if (reloadCam1Btn) reloadCam1Btn.addEventListener('click', reloadCam1);
 
 if (videoFeedCam2) {
     videoFeedCam2.addEventListener('error', () => {
-        if (!videoFeedCam2.src || videoFeedCam2.src.startsWith('data:')) return;
+        if (!videoFeedCam2.src || videoFeedCam2.src.startsWith('data:') || isAppPageHidden) return;
         cam2FailCount++;
         if (cam2FailCount >= 3 && reloadCam2Btn && (!isMobileDevice || currentViewMode !== 'cam1')) {
             reloadCam2Btn.style.display = 'inline-flex';
         }
-        setTimeout(reloadCam2, 2000);
+        clearTimeout(cam2ErrorTimer);
+        cam2ErrorTimer = setTimeout(reloadCam2, Math.min(6000, 2000 * Math.max(1, cam2FailCount - 2)));
     });
     videoFeedCam2.addEventListener('load', () => {
         cam2FailCount = 0;
@@ -2845,6 +2947,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     updateEngineUI();
+    initQualityControls();
     initSidebarTabNavigation();
     initSSE();
     initPtzControls();

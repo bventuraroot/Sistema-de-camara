@@ -91,13 +91,14 @@
                         <a href="/m" class="mobile-mode-hint" style="text-decoration: none; cursor: pointer;" title="Abrir interfaz móvil dedicada ultra-rápida">
                             📱 Modo Celular Fluido ↗
                         </a>
-                        <div class="stream-quality-selector" title="Ajusta el consumo de red/subida al ver las cámaras en vivo">
+                        <div class="stream-quality-selector" title="Ajusta la resolución en vivo de ambas cámaras simultáneamente (las grabaciones siempre se graban a 1080p)">
                             <span class="quality-icon">📶</span>
-                            <select id="streamQualitySelect" class="quality-dropdown" aria-label="Calidad de transmisión">
-                                <option value="mobile">📱 Modo Móvil (360p / Cero Consumo)</option>
-                                <option value="efficient" selected>⚡ Red Eficiente HD (540p / Nítido y Rápido)</option>
-                                <option value="balanced">📺 HD Equilibrado (720p)</option>
-                                <option value="original">💎 Máxima Calidad (1080p Nativo)</option>
+                            <select id="streamQualitySelect" class="quality-dropdown" aria-label="Calidad de transmisión global">
+                                <option value="" disabled selected>Calidad Global...</option>
+                                <option value="360p">📱 Ambas a 360p (Ultra Fluido)</option>
+                                <option value="480p">⚡ Ambas a 480p (Recomendado Red)</option>
+                                <option value="720p">📺 Ambas a 720p (HD)</option>
+                                <option value="1080p">💎 Ambas a 1080p (Nativo)</option>
                             </select>
                         </div>
                         <button type="button" class="btn-toggle-engine" id="btnToggleEngine" title="Alternar: Modo Cero Lag (Canvas GPU instantáneo) vs Modo Flujo Directo">
@@ -123,9 +124,20 @@
                                 <span class="badge badge-sm" id="cam1ResBadge">1080p HD</span>
                                 <span class="cam-fps" id="cam1FpsBadge">15 fps</span>
                             </div>
-                            <button type="button" class="btn-expand-cam" id="btnExpandCam1" data-cam="cam1" title="Ver esta cámara en pantalla completa">
-                                ⛶ Full
-                            </button>
+                            <div class="cam-header-actions">
+                                <div class="cam-quality-control" title="Resolución de visualización en vivo para Cámara 1 (grabación siempre en máxima calidad)">
+                                    <span class="cam-q-label">En vivo:</span>
+                                    <select class="cam-quality-select" id="qualitySelectCam1" data-cam="cam1" aria-label="Resolución en vivo Cámara 1">
+                                        <option value="360p">360p</option>
+                                        <option value="480p" selected>480p</option>
+                                        <option value="720p">720p</option>
+                                        <option value="1080p">1080p</option>
+                                    </select>
+                                </div>
+                                <button type="button" class="btn-expand-cam" id="btnExpandCam1" data-cam="cam1" title="Ver esta cámara en pantalla completa">
+                                    ⛶ Full
+                                </button>
+                            </div>
                         </div>
                         <div class="video-wrapper">
                             <canvas id="canvasFeedCam1" width="960" height="540" style="display: none; width: 100%; height: 100%; object-fit: contain;"></canvas>
@@ -162,9 +174,20 @@
                                 <span class="badge badge-sm" id="cam2ResBadge">1080p HD</span>
                                 <span class="cam-fps" id="cam2FpsBadge">25 fps</span>
                             </div>
-                            <button type="button" class="btn-expand-cam" id="btnExpandCam2" data-cam="cam2" title="Ver esta cámara en pantalla completa">
-                                ⛶ Full
-                            </button>
+                            <div class="cam-header-actions">
+                                <div class="cam-quality-control" title="Resolución de visualización en vivo para Cámara 2 (grabación continua 24/7 se mantiene a 1080p nativo)">
+                                    <span class="cam-q-label">En vivo:</span>
+                                    <select class="cam-quality-select" id="qualitySelectCam2" data-cam="cam2" aria-label="Resolución en vivo Cámara 2">
+                                        <option value="360p">360p</option>
+                                        <option value="480p" selected>480p</option>
+                                        <option value="720p">720p</option>
+                                        <option value="1080p">1080p</option>
+                                    </select>
+                                </div>
+                                <button type="button" class="btn-expand-cam" id="btnExpandCam2" data-cam="cam2" title="Ver esta cámara en pantalla completa">
+                                    ⛶ Full
+                                </button>
+                            </div>
                         </div>
                         <div class="video-wrapper">
                             <canvas id="canvasFeedCam2" width="960" height="540" style="display: none; width: 100%; height: 100%; object-fit: contain;"></canvas>

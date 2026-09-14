@@ -96,8 +96,8 @@ class VideoStream:
                                 self.height = h
                                 self.frame = frame
                                 self.connected = True
-
-                        time.sleep(0.008)
+                        # self.cap.grab() ya sincroniza de manera natural con la tasa de cuadros de la cámara RTSP
+                        # No agregar sleep aquí para evitar que se acumulen paquetes en el socket TCP (causa de timeout en 1080p)
 
                 except Exception as e:
                     logger.error(f"Error en stream_worker ({self.rtsp_url}): {e}")
