@@ -2028,4 +2028,191 @@ input[type="range"]::-webkit-slider-thumb:hover {
     animation: radarSpin 1.1s linear infinite;
 }
 
+/* ==========================================================================
+   ASISTENTE DE CÁMARAS Y GESTIÓN MULTI-CÁMARA DINÁMICA (FRONTEND DESIGN)
+   Paleta Oficial Obsidian: #00FF66 (Radar/Terminal), #FF9900 (Alerta), #121212
+   ========================================================================== */
+
+/* Botón Añadir Cámara en Barra de Vistas */
+.btn-tab-add {
+    background: rgba(0, 255, 102, 0.1) !important;
+    color: #00ff66 !important;
+    border: 1px dashed rgba(0, 255, 102, 0.4) !important;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.btn-tab-add:hover {
+    background: rgba(0, 255, 102, 0.2) !important;
+    border-color: #00ff66 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 0 12px rgba(0, 255, 102, 0.25);
+}
+
+/* Pestañas del Wizard Modal */
+.wizard-tabs-nav {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.65rem 1.25rem;
+    background: rgba(10, 13, 20, 0.6);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.wizard-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    padding: 0.45rem 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.wizard-tab-btn:hover {
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.wizard-tab-btn.active {
+    background: rgba(56, 189, 248, 0.12);
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.35);
+    font-weight: 600;
+}
+
+/* Selector de Marcas (V380, Sehmua, Tapo, etc.) */
+.brand-pills-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.brand-pill {
+    background: rgba(255, 255, 255, 0.03);
+    color: #cbd5e1;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 0.35rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.brand-pill:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.25);
+    color: #fff;
+    transform: translateY(-1px);
+}
+
+.brand-pill.active {
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(0, 255, 102, 0.15));
+    border-color: #38bdf8;
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+}
+
+/* Tarjetas de Administración de Cámaras */
+.camera-manage-card {
+    background: rgba(18, 24, 38, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    padding: 0.85rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.camera-manage-card:hover {
+    border-color: rgba(56, 189, 248, 0.3);
+    background: rgba(18, 24, 38, 0.85);
+}
+
+.cam-meta-badge {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    padding: 0.15rem 0.45rem;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #94a3b8;
+}
+
+.cam-meta-badge.badge-online {
+    color: #00ff66;
+    border-color: rgba(0, 255, 102, 0.3);
+    background: rgba(0, 255, 102, 0.08);
+}
+
+.cam-meta-badge.badge-offline {
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+}
+
+/* Tarjetas de Selección de Perfil de Almacenamiento */
+.profile-option-card {
+    transition: all 0.2s ease;
+}
+
+.profile-option-card:hover {
+    border-color: rgba(0, 255, 102, 0.3) !important;
+    background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.profile-option-card input[type="radio"]:checked + div strong {
+    text-shadow: 0 0 10px rgba(0, 255, 102, 0.3);
+}
+
+/* Mosaico Multi-Cámara Adaptable para N Cámaras */
+.mosaic-container {
+    width: 100%;
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: rgba(5, 8, 15, 0.95);
+    border-radius: var(--radius-md);
+    transition: all 0.3s ease;
+}
+
+.mosaic-container.grid-1 {
+    grid-template-columns: 1fr;
+}
+
+.mosaic-container.grid-2 {
+    grid-template-columns: repeat(2, minmax(360px, 1fr));
+}
+
+.mosaic-container.grid-3,
+.mosaic-container.grid-4 {
+    grid-template-columns: repeat(2, minmax(360px, 1fr));
+}
+
+.mosaic-container.grid-5,
+.mosaic-container.grid-6 {
+    grid-template-columns: repeat(3, minmax(300px, 1fr));
+}
+
+@media (max-width: 900px) {
+    .mosaic-container.grid-2,
+    .mosaic-container.grid-3,
+    .mosaic-container.grid-4,
+    .mosaic-container.grid-5,
+    .mosaic-container.grid-6 {
+        grid-template-columns: 1fr;
+    }
+}
+
+
 

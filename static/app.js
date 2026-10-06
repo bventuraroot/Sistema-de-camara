@@ -604,6 +604,10 @@ const storagePathDisplay = document.getElementById('storagePathDisplay');
 const storageFreeDisplay = document.getElementById('storageFreeDisplay');
 const storagePercentDisplay = document.getElementById('storagePercentDisplay');
 const storageProgressFill = document.getElementById('storageProgressFill');
+const storageQuotaUsedDisplay = document.getElementById('storageQuotaUsedDisplay');
+const storageQuotaLimitDisplay = document.getElementById('storageQuotaLimitDisplay');
+const storageQuotaFill = document.getElementById('storageQuotaFill');
+const storageRamDisplay = document.getElementById('storageRamDisplay');
 
 const sensitivitySlider = document.getElementById('sensitivitySlider');
 const sensValDisplay = document.getElementById('sensValDisplay');
@@ -1924,6 +1928,27 @@ async function pollStatus() {
             if (storageProgressFill && status.storage.percent_used !== undefined) {
                 storageProgressFill.style.width = `${Math.max(2, status.storage.percent_used)}%`;
             }
+            // Sincronizar Cuota de Grabaciones (ej. 100 GB) y Auto-Reciclaje
+            if (storageQuotaUsedDisplay && status.storage.recordings_used_gb !== undefined) {
+                storageQuotaUsedDisplay.textContent = status.storage.recordings_used_gb;
+            }
+            if (storageQuotaLimitDisplay && status.storage.max_storage_gb !== undefined) {
+                storageQuotaLimitDisplay.textContent = status.storage.max_storage_gb;
+            }
+            if (storageQuotaFill && status.storage.quota_percent !== undefined) {
+                const qPct = Math.min(100, Math.max(0, status.storage.quota_percent));
+                storageQuotaFill.style.width = `${Math.max(2, qPct)}%`;
+                if (qPct >= 92) {
+                    storageQuotaFill.style.background = '#ef4444';
+                } else if (qPct >= 75) {
+                    storageQuotaFill.style.background = '#f59e0b';
+                } else {
+                    storageQuotaFill.style.background = '#00ff66';
+                }
+            }
+            if (storageRamDisplay && status.storage.ram_process_mb !== undefined) {
+                storageRamDisplay.textContent = `${status.storage.ram_process_mb} MB`;
+            }
         }
 
         // Sincronizar Perfil del Sistema y Estado de Capacidades
@@ -2476,14 +2501,366 @@ function initSystemCapabilities() {
     loadCapabilities(false);
 }
 
-// ----------------- MODAL ANALIZADOR DE RED Y DETECTOR DE CÁMARAS IP -----------------
+// ----------------- MODAL OPTIMIZADOR DE ALMACENAMIENTO (ESTILO MICROSD) -----------------
+function initStorageOptimizationModal() {
+    const btnOpenStorageModal = document.getElementById('btnOpenStorageModal');
+    const btnSidebarStorageOptimize = document.getElementById('btnSidebarStorageOptimize');
+    const storageModal = document.getElementById('storageModal');
+    const storageCloseBtn = document.getElementById('storageCloseBtn');
+    const storageCloseFooterBtn = document.getElementById('storageCloseFooterBtn');
+    const storageBackdrop = document.getElementById('storageBackdrop');
+    const saveStorageProfileBtn = document.getElementById('saveStorageProfileBtn');
+    const btnExecutePurge = document.getElementById('btnExecutePurge');
+    const purgeDaysSelect = document.getElementById('purgeDaysSelect');
+    const purgeFeedbackText = document.getElementById('purgeFeedbackText');
+
+    const storageProfileActiveBadge = document.getElementById('storageProfileActiveBadge');
+    const storageSavingEstimate = document.getElementById('storageSavingEstimate');
+    const storageBadgeText = document.getElementById('storageBadgeText');
+
+    // Elementos de la Cuota de Grabación (Ring Buffer FIFO)
+    const storageQuotaInput = document.getElementById('storageQuotaInput');
+    const autoRecycleCheckbox = document.getElementById('autoRecycleCheckbox');
+    const quotaPresetBtns = document.querySelectorAll('.quota-preset-btn');
+    const modalQuotaUsedDisplay = document.getElementById('modalQuotaUsedDisplay');
+    const modalQuotaLimitDisplay = document.getElementById('modalQuotaLimitDisplay');
+    const modalQuotaPctDisplay = document.getElementById('modalQuotaPctDisplay');
+    const modalQuotaProgressBar = document.getElementById('modalQuotaProgressBar');
+    const modalQuotaFreeDisplay = document.getElementById('modalQuotaFreeDisplay');
+    const btnModalForceRecycle = document.getElementById('btnModalForceRecycle');
+    const modalRecycleFeedback = document.getElementById('modalRecycleFeedback');
+
+    let currentQuotaData = {
+        recordings_used_gb: 0.0,
+        max_storage_gb: 100.0,
+        quota_percent: 0,
+        quota_free_gb: 100.0
+    };
+
+    function openModal() {
+        if (storageModal) storageModal.style.display = 'flex';
+        syncCurrentStorageProfile();
+    }
+
+    function closeModal() {
+        if (storageModal) storageModal.style.display = 'none';
+    }
+
+    if (btnOpenStorageModal) btnOpenStorageModal.addEventListener('click', openModal);
+    if (btnSidebarStorageOptimize) btnSidebarStorageOptimize.addEventListener('click', openModal);
+    if (storageCloseBtn) storageCloseBtn.addEventListener('click', closeModal);
+    if (storageCloseFooterBtn) storageCloseFooterBtn.addEventListener('click', closeModal);
+    if (storageBackdrop) storageBackdrop.addEventListener('click', closeModal);
+
+    // Manejar presets rápidos de cuota
+    quotaPresetBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            quotaPresetBtns.forEach(b => {
+                b.classList.remove('active');
+                b.style.background = 'rgba(255,255,255,0.06)';
+                b.style.borderColor = 'rgba(255,255,255,0.15)';
+                b.style.color = '#f8fafc';
+                b.style.fontWeight = 'normal';
+            });
+            btn.classList.add('active');
+            btn.style.background = 'rgba(0, 255, 102, 0.2)';
+            btn.style.borderColor = '#00ff66';
+            btn.style.color = '#00ff66';
+            btn.style.fontWeight = '600';
+
+            const val = parseFloat(btn.dataset.quota);
+            if (storageQuotaInput) storageQuotaInput.value = val;
+            updateModalQuotaUI(currentQuotaData.recordings_used_gb, val);
+        });
+    });
+
+    if (storageQuotaInput) {
+        storageQuotaInput.addEventListener('input', () => {
+            const val = parseFloat(storageQuotaInput.value) || 100;
+            quotaPresetBtns.forEach(b => {
+                const isMatch = parseFloat(b.dataset.quota) === val;
+                b.classList.toggle('active', isMatch);
+                b.style.background = isMatch ? 'rgba(0, 255, 102, 0.2)' : 'rgba(255,255,255,0.06)';
+                b.style.borderColor = isMatch ? '#00ff66' : 'rgba(255,255,255,0.15)';
+                b.style.color = isMatch ? '#00ff66' : '#f8fafc';
+                b.style.fontWeight = isMatch ? '600' : 'normal';
+            });
+            updateModalQuotaUI(currentQuotaData.recordings_used_gb, val);
+        });
+    }
+
+    function updateModalQuotaUI(usedGb, limitGb) {
+        const used = Math.max(0, parseFloat(usedGb) || 0);
+        const limit = Math.max(1, parseFloat(limitGb) || 100);
+        const pct = Math.min(100, Math.round((used / limit) * 100));
+        const free = Math.max(0, Math.round((limit - used) * 10) / 10);
+
+        if (modalQuotaUsedDisplay) modalQuotaUsedDisplay.textContent = used.toFixed(1);
+        if (modalQuotaLimitDisplay) modalQuotaLimitDisplay.textContent = limit.toFixed(0);
+        if (modalQuotaPctDisplay) modalQuotaPctDisplay.textContent = `${pct}%`;
+        if (modalQuotaFreeDisplay) modalQuotaFreeDisplay.textContent = `${free.toFixed(1)} GB`;
+
+        if (modalQuotaProgressBar) {
+            modalQuotaProgressBar.style.width = `${Math.max(2, pct)}%`;
+            if (pct >= 92) {
+                modalQuotaProgressBar.style.background = '#ef4444';
+            } else if (pct >= 75) {
+                modalQuotaProgressBar.style.background = '#f59e0b';
+            } else {
+                modalQuotaProgressBar.style.background = '#00ff66';
+            }
+        }
+    }
+
+    async function syncCurrentStorageProfile() {
+        try {
+            const res = await fetch('/api/storage');
+            if (res.ok) {
+                const data = await res.json();
+                const profile = data.storage_profile || 'microsd_events';
+                const rad = document.querySelector(`input[name="storageProfileRadio"][value="${profile}"]`);
+                if (rad) rad.checked = true;
+                updateStorageBadgeDisplays(profile);
+
+                // Sincronizar cuota y auto-reciclaje
+                const limitGb = parseFloat(data.max_storage_gb) || 100;
+                const usedGb = parseFloat(data.recordings_used_gb) || 0.0;
+                currentQuotaData = {
+                    recordings_used_gb: usedGb,
+                    max_storage_gb: limitGb,
+                    quota_percent: data.quota_percent || 0,
+                    quota_free_gb: data.quota_free_gb || 0
+                };
+
+                if (storageQuotaInput) storageQuotaInput.value = limitGb;
+                if (autoRecycleCheckbox) autoRecycleCheckbox.checked = (data.auto_recycle_enabled !== false);
+
+                // Activar visualmente el preset correspondiente
+                quotaPresetBtns.forEach(b => {
+                    const isMatch = parseFloat(b.dataset.quota) === limitGb;
+                    b.classList.toggle('active', isMatch);
+                    b.style.background = isMatch ? 'rgba(0, 255, 102, 0.2)' : 'rgba(255,255,255,0.06)';
+                    b.style.borderColor = isMatch ? '#00ff66' : 'rgba(255,255,255,0.15)';
+                    b.style.color = isMatch ? '#00ff66' : '#f8fafc';
+                    b.style.fontWeight = isMatch ? '600' : 'normal';
+                });
+
+                updateModalQuotaUI(usedGb, limitGb);
+            }
+        } catch (e) {
+            console.error('Error sincronizando perfil de almacenamiento:', e);
+        }
+    }
+
+    function updateStorageBadgeDisplays(profile) {
+        if (profile === 'microsd_events') {
+            if (storageProfileActiveBadge) {
+                storageProfileActiveBadge.textContent = '🛡️ MicroSD (Solo Eventos)';
+                storageProfileActiveBadge.style.color = '#00ff66';
+                storageProfileActiveBadge.style.borderColor = 'rgba(0, 255, 102, 0.4)';
+            }
+            if (storageSavingEstimate) storageSavingEstimate.textContent = '~98% menos disco (500MB/día)';
+            if (storageBadgeText) storageBadgeText.textContent = '💾 Modo MicroSD';
+        } else if (profile === 'smart_vbr') {
+            if (storageProfileActiveBadge) {
+                storageProfileActiveBadge.textContent = '⚡ Smart VBR (Continua 24/7)';
+                storageProfileActiveBadge.style.color = '#38bdf8';
+                storageProfileActiveBadge.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            }
+            if (storageSavingEstimate) storageSavingEstimate.textContent = '~78% menos disco (6-8GB/día)';
+            if (storageBadgeText) storageBadgeText.textContent = '⚡ Smart VBR';
+        } else {
+            if (storageProfileActiveBadge) {
+                storageProfileActiveBadge.textContent = '⚠️ Alta Calidad (Nativo)';
+                storageProfileActiveBadge.style.color = '#ef4444';
+                storageProfileActiveBadge.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+            }
+            if (storageSavingEstimate) storageSavingEstimate.textContent = 'Sin compresión (72GB/día)';
+            if (storageBadgeText) storageBadgeText.textContent = '⚠️ Alta Calidad';
+        }
+    }
+
+    // Botón para forzar reciclaje FIFO manualmente
+    if (btnModalForceRecycle) {
+        btnModalForceRecycle.addEventListener('click', async () => {
+            btnModalForceRecycle.disabled = true;
+            btnModalForceRecycle.textContent = '♻️ Reciclando...';
+            if (modalRecycleFeedback) modalRecycleFeedback.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/storage/recycle-now', { method: 'POST' });
+                const result = await res.json();
+                if (result.success) {
+                    if (modalRecycleFeedback) {
+                        modalRecycleFeedback.style.display = 'block';
+                        modalRecycleFeedback.style.color = '#34d399';
+                        modalRecycleFeedback.textContent = `✅ ${result.message}`;
+                    }
+                    syncCurrentStorageProfile();
+                    pollStatus();
+                } else {
+                    if (modalRecycleFeedback) {
+                        modalRecycleFeedback.style.display = 'block';
+                        modalRecycleFeedback.style.color = '#f87171';
+                        modalRecycleFeedback.textContent = `❌ ${result.error || 'Error al reciclar'}`;
+                    }
+                }
+            } catch (e) {
+                if (modalRecycleFeedback) {
+                    modalRecycleFeedback.style.display = 'block';
+                    modalRecycleFeedback.style.color = '#f87171';
+                    modalRecycleFeedback.textContent = `❌ Error: ${e.message || e}`;
+                }
+            } finally {
+                btnModalForceRecycle.disabled = false;
+                btnModalForceRecycle.textContent = '♻️ Forzar Reciclaje Ahora';
+            }
+        });
+    }
+
+    // Guardar Perfil de Compresión y Cuota de Almacenamiento (100 GB)
+    if (saveStorageProfileBtn) {
+        saveStorageProfileBtn.addEventListener('click', async () => {
+            const selectedRad = document.querySelector('input[name="storageProfileRadio"]:checked');
+            const profile = selectedRad ? selectedRad.value : 'microsd_events';
+            const quotaVal = parseFloat(storageQuotaInput ? storageQuotaInput.value : 100) || 100;
+            const autoRecycleVal = autoRecycleCheckbox ? autoRecycleCheckbox.checked : true;
+
+            saveStorageProfileBtn.disabled = true;
+            saveStorageProfileBtn.textContent = 'Guardando configuración...';
+
+            try {
+                // 1. Guardar perfil de compresión H.264
+                const resProf = await fetch('/api/settings/storage-profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile: profile })
+                });
+                const resProfData = await resProf.json();
+
+                // 2. Guardar cuota de almacenamiento y auto-reciclaje FIFO
+                const resQuota = await fetch('/api/settings/storage-quota', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        max_storage_gb: quotaVal,
+                        auto_recycle_enabled: autoRecycleVal
+                    })
+                });
+                const resQuotaData = await resQuota.json();
+
+                if (resProfData.success && resQuotaData.success) {
+                    updateStorageBadgeDisplays(profile);
+                    alert(`✅ ¡Configuración de Almacenamiento guardada con éxito!\n\n• Perfil: ${profile}\n• Límite Cuota: ${quotaVal} GB\n• Auto-Reciclaje FIFO: ${autoRecycleVal ? 'ACTIVO (Ring Buffer 24/7)' : 'DESACTIVADO'}`);
+                    closeModal();
+                    pollStatus();
+                } else {
+                    const err = resProfData.error || resQuotaData.error || 'Error al guardar';
+                    alert(`Error: ${err}`);
+                }
+            } catch (e) {
+                alert(`❌ Error al guardar configuración de almacenamiento: ${e.message || e}`);
+            } finally {
+                saveStorageProfileBtn.disabled = false;
+                saveStorageProfileBtn.textContent = '💾 Guardar Modo y Límite de Cuota';
+            }
+        });
+    }
+
+    if (btnExecutePurge) {
+        btnExecutePurge.addEventListener('click', async () => {
+            const days = parseInt(purgeDaysSelect ? purgeDaysSelect.value : '7', 10);
+            const msg = days === 0
+                ? '¿Estás seguro de BORRAR TODAS las grabaciones continuas pesadas? (Las fotos y clips de alertas prioritarias se mantendrán)'
+                : `¿Deseas purgar grabaciones continuas de más de ${days} días para liberar espacio?`;
+            
+            if (!confirm(msg)) return;
+
+            btnExecutePurge.disabled = true;
+            btnExecutePurge.textContent = '⏳ Purgando...';
+            if (purgeFeedbackText) purgeFeedbackText.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/storage/purge', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ days_to_keep: days, delete_continuous: true })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    if (purgeFeedbackText) {
+                        purgeFeedbackText.style.display = 'inline-block';
+                        purgeFeedbackText.textContent = `✅ ${result.message} (${result.freed_mb || 0} MB liberados)`;
+                    }
+                    syncCurrentStorageProfile();
+                    pollStatus();
+                } else {
+                    alert(`Error en purga: ${result.error || 'No se pudo purgar'}`);
+                }
+            } catch (e) {
+                alert(`Error en purga: ${e.message || e}`);
+            } finally {
+                btnExecutePurge.disabled = false;
+                btnExecutePurge.textContent = '🗑️ Purgar Grabaciones Continuas Ahora';
+            }
+        });
+    }
+
+    syncCurrentStorageProfile();
+}
+
+// ----------------- SINCRONIZACIÓN DINÁMICA DE PESTAÑAS DE VISTA PARA N CÁMARAS -----------------
+async function refreshDynamicCameraTabs() {
+    const dynamicGroup = document.getElementById('dynamicCamTabsGroup');
+    if (!dynamicGroup) return;
+
+    try {
+        const res = await fetch('/api/cameras');
+        if (!res.ok) return;
+        const data = await res.json();
+        const cams = data.cameras || [];
+
+        dynamicGroup.innerHTML = '';
+        cams.forEach(cam => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `view-tab-btn ${currentViewMode === cam.id ? 'active' : ''}`;
+            btn.id = `tab_${cam.id}`;
+            btn.dataset.view = cam.id;
+            btn.innerHTML = `<span class="icon">📹</span> ${cam.name}`;
+
+            btn.addEventListener('click', () => {
+                setViewMode(cam.id);
+            });
+            dynamicGroup.appendChild(btn);
+        });
+
+        if (mosaicContainer) {
+            mosaicContainer.classList.remove('grid-1', 'grid-2', 'grid-3', 'grid-4', 'grid-5', 'grid-6');
+            if (cams.length <= 1) mosaicContainer.classList.add('grid-1');
+            else if (cams.length === 2) mosaicContainer.classList.add('grid-2');
+            else if (cams.length <= 4) mosaicContainer.classList.add('grid-4');
+            else mosaicContainer.classList.add('grid-6');
+        }
+    } catch (e) {
+        console.error('Error refrescando pestañas dinámicas de cámaras:', e);
+    }
+}
+
+// ----------------- ASISTENTE DE CÁMARAS Y GESTIÓN MULTI-CÁMARA DINÁMICA -----------------
 function initNetworkScannerModal() {
     const btnOpenScanner = document.getElementById('btnOpenScanner');
+    const tabAddCameraBtn = document.getElementById('tabAddCameraBtn');
     const scannerModal = document.getElementById('scannerModal');
     const scannerCloseBtn = document.getElementById('scannerCloseBtn');
     const scannerCloseFooterBtn = document.getElementById('scannerCloseFooterBtn');
     const scannerBackdrop = document.getElementById('scannerBackdrop');
     
+    // Pestañas del Wizard
+    const wizardTabs = document.querySelectorAll('.wizard-tab-btn');
+    const wizardPanels = document.querySelectorAll('.wizard-panel');
+
+    // Panel 1: Radar
     const scanSubnetInput = document.getElementById('scanSubnetInput');
     const startScanBtn = document.getElementById('startScanBtn');
     const startScanIcon = document.getElementById('startScanIcon');
@@ -2493,24 +2870,134 @@ function initNetworkScannerModal() {
     const scanFoundCount = document.getElementById('scanFoundCount');
     const scannedDevicesList = document.getElementById('scannedDevicesList');
 
+    // Panel 2: Fabricantes
+    const brandPills = document.querySelectorAll('.brand-pill');
+    const brandGuideTitle = document.getElementById('brandGuideTitle');
+    const brandGuideDesc = document.getElementById('brandGuideDesc');
+    const brandGuideTips = document.getElementById('brandGuideTips');
+
+    const wizCamName = document.getElementById('wizCamName');
+    const wizCamIp = document.getElementById('wizCamIp');
+    const wizCamPort = document.getElementById('wizCamPort');
+    const wizCamUser = document.getElementById('wizCamUser');
+    const wizCamPass = document.getElementById('wizCamPass');
+    const wizCamPath = document.getElementById('wizCamPath');
+    const wizGeneratedRtsp = document.getElementById('wizGeneratedRtsp');
+    const btnTestWizStream = document.getElementById('btnTestWizStream');
+    const wizTestFeedback = document.getElementById('wizTestFeedback');
+    const btnSaveWizCamera = document.getElementById('btnSaveWizCamera');
+
+    // Panel 3: Gestión
+    const wizActiveCount = document.getElementById('wizActiveCount');
+    const activeCamerasCardsList = document.getElementById('activeCamerasCardsList');
+    const btnGoToAddNewCamera = document.getElementById('btnGoToAddNewCamera');
+
+    // Panel 4: Manual
     const manualRtspInput = document.getElementById('manualRtspInput');
     const testManualRtspBtn = document.getElementById('testManualRtspBtn');
     const manualTestResult = document.getElementById('manualTestResult');
     const assignManualCam1Btn = document.getElementById('assignManualCam1Btn');
     const assignManualCam2Btn = document.getElementById('assignManualCam2Btn');
+    const btnAddNewManualCam = document.getElementById('btnAddNewManualCam');
 
-    let presetsCache = [];
+    let currentSelectedBrand = 'v380';
     let isScanning = false;
 
-    function openModal() {
+    // Perfiles y guías técnicas para fabricantes
+    const brandProfiles = {
+        v380: {
+            title: '📹 Guía de Configuración: V380 / V380 Pro',
+            desc: 'Las cámaras V380 y V380 Pro transmiten RTSP en puertos 554, 8899, 8800 o 5054. La contraseña es la clave local que configuraste en la aplicación móvil V380 Pro.',
+            tips: '💡 <strong>Paso Clave V380:</strong> Asegúrate de que la cámara esté conectada a tu router Wi-Fi. La contraseña suele ser la que definiste al registrar la cámara en la app V380 Pro. Si la dejaste sin contraseña, prueba usuario <code>admin</code> y clave vacía.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: '',
+            defaultPath: '/live/ch0'
+        },
+        sehmua: {
+            title: '🛡️ Guía de Configuración: Sehmua / Ubox',
+            desc: 'Cámaras de seguridad exterior Sehmua y basadas en Ubox/Tuya.',
+            tips: '⚠️ <strong>Diferencia Crítica en Sehmua:</strong> Si tu modelo Sehmua es solar a batería, entra en suspensión profunda y apaga el RTSP para no descargar la batería. Para videovigilancia continua debe mantenerse alimentada por cable a corriente. Si es modelo PTZ cableado, soporta RTSP estándar en puerto 554 con ruta <code>/live/ch0</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: 'admin',
+            defaultPath: '/live/ch0'
+        },
+        tapo: {
+            title: '📶 Guía de Configuración: TP-Link Tapo (C200, C310, C500, etc.)',
+            desc: 'Las cámaras TP-Link Tapo usan el puerto RTSP 2020 y requieren habilitar una Cuenta de Cámara local en la app.',
+            tips: '💡 <strong>Paso Tapo Obligatorio:</strong> Abre la app Tapo en tu móvil > Ajustes de cámara > Ajustes Avanzados > <strong>"Cuenta de la Cámara"</strong>. Crea usuario y contraseña allí y escríbelos abajo.',
+            defaultPort: 2020,
+            defaultUser: 'admin',
+            defaultPass: '',
+            defaultPath: '/stream1'
+        },
+        icam365: {
+            title: '👁️ Guía de Configuración: iCam365 / EyePlus / Cloud Cam',
+            desc: 'Cámaras domo y PTZ que utilizan la plataforma iCam365.',
+            tips: '💡 <strong>Estándar iCam365:</strong> Puerto 554, usuario <code>admin</code> y contraseña <code>admin</code>. Ruta de alta definición: <code>/live/ch0</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: 'admin',
+            defaultPath: '/live/ch0'
+        },
+        tuya: {
+            title: '☁️ Guía de Configuración: Tuya / Smart Life',
+            desc: 'Cámaras Tuya Smart / Smart Life integradas a través del Bridge local o RTSP.',
+            tips: '💡 <strong>Bridge Local Tuya:</strong> Si usas el RTSP Bridge integrado en esta máquina, la URL es <code>rtsp://localhost:8554/Cámara_de_nubes/hd</code>.',
+            defaultPort: 8554,
+            defaultUser: '',
+            defaultPass: '',
+            defaultPath: '/Cámara_de_nubes/hd'
+        },
+        xm_icsee: {
+            title: '📱 Guía de Configuración: iCSee / Xiongmai / XM',
+            desc: 'Cámaras que operan con app iCSee o chipset Xiongmai.',
+            tips: '💡 <strong>iCSee Defaults:</strong> Puerto 554, usuario <code>admin</code> y contraseña en blanco. Ruta HD: <code>/stream0</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: '',
+            defaultPath: '/stream0'
+        },
+        yoosee: {
+            title: '🎯 Guía de Configuración: Yoosee / CooCam',
+            desc: 'Cámaras autónomas que se configuran con la app Yoosee.',
+            tips: '💡 <strong>Yoosee Defaults:</strong> Activa RTSP en la app Yoosee (Ajustes > Ajustes NVR / Conexiones). La contraseña de fábrica suele ser <code>123456</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: '123456',
+            defaultPath: '/onvif1'
+        },
+        dahua: {
+            title: '🏢 Guía de Configuración: Dahua / Imou',
+            desc: 'Cámaras Dahua e Imou Consumer.',
+            tips: '💡 <strong>Imou/Dahua:</strong> En Imou la contraseña RTSP es el <strong>Safety Code</strong> impreso en la etiqueta de la cámara. Ruta estándar: <code>/cam/realmonitor?channel=1&subtype=0</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: '',
+            defaultPath: '/cam/realmonitor?channel=1&subtype=0'
+        },
+        hikvision: {
+            title: '🏛️ Guía de Configuración: Hikvision / Hilook / Ezviz',
+            desc: 'Cámaras Hikvision, Hilook y Ezviz.',
+            tips: '💡 <strong>Ezviz/Hikvision:</strong> Para Ezviz la contraseña es el Código de Verificación en mayúsculas de la etiqueta. Ruta principal: <code>/Streaming/Channels/101</code>.',
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: '',
+            defaultPath: '/Streaming/Channels/101'
+        }
+    };
+
+    function openModal(tabTarget = 'panelWizRadar') {
         if (scannerModal) {
             scannerModal.style.display = 'flex';
-            if (!scanSubnetInput.value.trim()) {
-                // Inferir subred por la IP del servidor si está disponible
+            if (scanSubnetInput && !scanSubnetInput.value.trim()) {
                 const localUrl = document.getElementById('localUrlDisplay')?.textContent || '';
                 const m = localUrl.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.)/);
                 scanSubnetInput.value = m ? m[1] : '192.168.1.';
             }
+            switchWizardTab(tabTarget);
+            loadActiveCamerasList();
         }
     }
 
@@ -2518,25 +3005,165 @@ function initNetworkScannerModal() {
         if (scannerModal) scannerModal.style.display = 'none';
     }
 
-    if (btnOpenScanner) btnOpenScanner.addEventListener('click', openModal);
+    function switchWizardTab(targetId) {
+        wizardPanels.forEach(panel => {
+            panel.style.display = (panel.id === targetId) ? 'block' : 'none';
+        });
+        wizardTabs.forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.target === targetId);
+        });
+    }
+
+    wizardTabs.forEach(tab => {
+        tab.addEventListener('click', () => switchWizardTab(tab.dataset.target));
+    });
+
+    if (btnOpenScanner) btnOpenScanner.addEventListener('click', () => openModal('panelWizRadar'));
+    if (tabAddCameraBtn) tabAddCameraBtn.addEventListener('click', () => openModal('panelWizBrands'));
+    if (btnGoToAddNewCamera) btnGoToAddNewCamera.addEventListener('click', () => switchWizardTab('panelWizBrands'));
     if (scannerCloseBtn) scannerCloseBtn.addEventListener('click', closeModal);
     if (scannerCloseFooterBtn) scannerCloseFooterBtn.addEventListener('click', closeModal);
     if (scannerBackdrop) scannerBackdrop.addEventListener('click', closeModal);
 
-    // Cargar plantillas de fabricantes
-    async function loadPresets() {
-        try {
-            const res = await fetch('/api/scanner/presets');
-            if (res.ok) {
-                presetsCache = await res.json();
-            }
-        } catch (e) {
-            console.error('Error cargando presets de cámaras:', e);
-        }
-    }
-    loadPresets();
+    // Selección de Marcas en Asistente
+    function applyBrandProfile(brandKey) {
+        currentSelectedBrand = brandKey;
+        const prof = brandProfiles[brandKey] || brandProfiles.v380;
 
-    // Escanear red
+        brandPills.forEach(p => p.classList.toggle('active', p.dataset.brand === brandKey));
+
+        if (brandGuideTitle) brandGuideTitle.textContent = prof.title;
+        if (brandGuideDesc) brandGuideDesc.textContent = prof.desc;
+        if (brandGuideTips) brandGuideTips.innerHTML = prof.tips;
+
+        if (wizCamPort) wizCamPort.value = prof.defaultPort;
+        if (wizCamUser && (!wizCamUser.value || wizCamUser.value === 'admin')) wizCamUser.value = prof.defaultUser;
+        if (wizCamPass && prof.defaultPass) wizCamPass.value = prof.defaultPass;
+        if (wizCamPath) wizCamPath.value = prof.defaultPath;
+        if (wizCamName && !wizCamName.value) {
+            wizCamName.value = `Cámara ${brandKey.toUpperCase()}`;
+        }
+
+        recalculateGeneratedRtsp();
+    }
+
+    brandPills.forEach(pill => {
+        pill.addEventListener('click', () => {
+            applyBrandProfile(pill.dataset.brand);
+        });
+    });
+
+    function recalculateGeneratedRtsp() {
+        if (!wizGeneratedRtsp) return;
+        const ip = wizCamIp ? wizCamIp.value.trim() : '';
+        if (!ip) {
+            wizGeneratedRtsp.value = 'Ingresa la IP de la cámara para generar el enlace RTSP...';
+            return;
+        }
+        const port = wizCamPort ? wizCamPort.value.trim() : '554';
+        const user = wizCamUser ? wizCamUser.value.trim() : '';
+        const pass = wizCamPass ? wizCamPass.value.trim() : '';
+        let path = wizCamPath ? wizCamPath.value.trim() : '/live/ch0';
+        if (path && !path.startsWith('/') && !path.startsWith('?')) path = '/' + path;
+
+        let auth = '';
+        if (user || pass) {
+            auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
+        }
+        wizGeneratedRtsp.value = `rtsp://${auth}${ip}:${port}${path}`;
+    }
+
+    [wizCamIp, wizCamPort, wizCamUser, wizCamPass, wizCamPath].forEach(el => {
+        if (el) el.addEventListener('input', recalculateGeneratedRtsp);
+    });
+
+    // Probar Stream en Asistente
+    if (btnTestWizStream && wizTestFeedback) {
+        btnTestWizStream.addEventListener('click', async () => {
+            recalculateGeneratedRtsp();
+            const rtspUrl = wizGeneratedRtsp.value.trim();
+            if (!rtspUrl || !rtspUrl.startsWith('rtsp://')) {
+                alert('Ingresa una dirección IP válida primero');
+                return;
+            }
+
+            btnTestWizStream.disabled = true;
+            btnTestWizStream.textContent = '⏳ Probando...';
+            wizTestFeedback.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/scanner/test_stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rtsp_url: rtspUrl })
+                });
+                const result = await res.json();
+                wizTestFeedback.style.display = 'inline-block';
+                if (result.success) {
+                    wizTestFeedback.className = 'device-test-feedback test-success';
+                    wizTestFeedback.textContent = `✅ Video OK: ${result.resolution} (${result.latency_ms || 0}ms)`;
+                } else {
+                    wizTestFeedback.className = 'device-test-feedback test-error';
+                    wizTestFeedback.textContent = `❌ ${result.error || 'No responde'}`;
+                }
+            } catch (e) {
+                wizTestFeedback.style.display = 'inline-block';
+                wizTestFeedback.className = 'device-test-feedback test-error';
+                wizTestFeedback.textContent = `❌ Error: ${e.message || e}`;
+            } finally {
+                btnTestWizStream.disabled = false;
+                btnTestWizStream.textContent = '🧪 Probar Conexión en Vivo';
+            }
+        });
+    }
+
+    // Guardar Cámara desde Asistente
+    if (btnSaveWizCamera) {
+        btnSaveWizCamera.addEventListener('click', async () => {
+            recalculateGeneratedRtsp();
+            const rtspUrl = wizGeneratedRtsp.value.trim();
+            const name = wizCamName ? wizCamName.value.trim() : 'Nueva Cámara';
+
+            if (!rtspUrl || !rtspUrl.startsWith('rtsp://')) {
+                alert('Ingresa la IP y parámetros correctos para generar la URL RTSP');
+                return;
+            }
+
+            btnSaveWizCamera.disabled = true;
+            btnSaveWizCamera.textContent = 'Agregando...';
+
+            try {
+                const res = await fetch('/api/cameras', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: name,
+                        rtsp_url: rtspUrl,
+                        continuous_recording: false, // Por defecto en Modo MicroSD / Eventos para evitar 72 GB
+                        motion_detection: true,
+                        ai_detection: true
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert(`✅ ¡Cámara "${name}" agregada con éxito!\n\nID Asignado: ${result.camera_id}`);
+                    closeModal();
+                    refreshDynamicCameraTabs();
+                    refreshActiveFeeds(true);
+                    pollStatus();
+                } else {
+                    alert(`Error: ${result.error || 'No se pudo agregar la cámara'}`);
+                }
+            } catch (e) {
+                alert(`❌ Error al agregar cámara: ${e.message || e}`);
+            } finally {
+                btnSaveWizCamera.disabled = false;
+                btnSaveWizCamera.textContent = '➕ Agregar Esta Cámara al Sistema';
+            }
+        });
+    }
+
+    // Escanear Red (Radar)
     async function runNetworkScan() {
         if (isScanning) return;
         isScanning = true;
@@ -2548,7 +3175,7 @@ function initNetworkScannerModal() {
             startScanIcon.classList.add('radar-spinning');
         }
         if (startScanText) startScanText.textContent = 'Escaneando Red...';
-        if (scanStatusMsg) scanStatusMsg.textContent = 'Enviando sondas ONVIF UDP y escaneando puertos RTSP (554, 8899, 80, 5000)...';
+        if (scanStatusMsg) scanStatusMsg.textContent = 'Enviando sondas ONVIF y analizando puertos V380, Sehmua, Tapo, RTSP...';
         if (scanFoundCount) scanFoundCount.textContent = '0';
 
         let timerSeconds = 0;
@@ -2591,11 +3218,8 @@ function initNetworkScannerModal() {
         }
     }
 
-    if (startScanBtn) {
-        startScanBtn.addEventListener('click', runNetworkScan);
-    }
+    if (startScanBtn) startScanBtn.addEventListener('click', runNetworkScan);
 
-    // Renderizar tarjetas de dispositivos encontrados
     function renderDiscoveredDevices(devices) {
         if (!scannedDevicesList) return;
         scannedDevicesList.innerHTML = '';
@@ -2606,7 +3230,7 @@ function initNetworkScannerModal() {
                     <span style="font-size: 2rem; display: block; margin-bottom: 0.4rem;">⚠️</span>
                     <p style="color: #cbd5e1; font-size: 0.85rem; margin: 0; font-weight: 500;">No se detectaron cámaras en esta subred.</p>
                     <p style="color: #94a3b8; font-size: 0.74rem; margin-top: 0.3rem;">
-                        Verifica que la cámara esté encendida, con cable/Wi-Fi en la misma red y prueba cambiar la subred (ej: <strong>192.168.0.</strong> o <strong>10.0.0.</strong>).
+                        Verifica que la cámara esté encendida, conectada a tu Wi-Fi o router y prueba cambiar la subred (ej: <strong>192.168.0.</strong>).
                     </p>
                 </div>
             `;
@@ -2628,7 +3252,7 @@ function initNetworkScannerModal() {
                         <div>
                             <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span class="device-ip-badge">${dev.ip}</span>
-                                <strong style="color: #f8fafc; font-size: 0.88rem;">${dev.name || 'Cámara de Seguridad'}</strong>
+                                <strong style="color: #f8fafc; font-size: 0.88rem;">${dev.name || 'Cámara IP'}</strong>
                             </div>
                             <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 0.15rem;">
                                 MAC: <span style="font-family: var(--font-mono); color: #cbd5e1;">${dev.mac || 'N/A'}</span>
@@ -2636,7 +3260,7 @@ function initNetworkScannerModal() {
                         </div>
                     </div>
                     <div class="device-meta-pills">
-                        <span class="device-pill pill-hardware">🏷️ ${dev.hardware || 'Cámara IP'}</span>
+                        <span class="device-pill pill-hardware">🏷️ ${dev.hardware || 'Cámara'}</span>
                         <span class="device-pill">🔌 Puertos ${openPortsStr}</span>
                         <span class="device-pill pill-online">🟢 Online (${dev.latency_ms || 10}ms)</span>
                     </div>
@@ -2644,16 +3268,17 @@ function initNetworkScannerModal() {
 
                 <div class="device-url-box">
                     <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; color: #cbd5e1;">
-                        <span><strong>URL RTSP para conexión:</strong></span>
+                        <span><strong>URL RTSP sugerida:</strong></span>
                         <div style="display: flex; gap: 0.4rem; align-items: center;">
-                            <span style="font-size: 0.7rem; color: #94a3b8;">Plantilla:</span>
+                            <span style="font-size: 0.7rem; color: #94a3b8;">Preset:</span>
                             <select class="device-preset-select" data-ip="${dev.ip}" style="background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.15); color: #f8fafc; font-size: 0.72rem; padding: 0.15rem 0.4rem; border-radius: 4px;">
                                 <option value="custom">✏️ Personalizada</option>
-                                <option value="icam365" selected>iCam365 / EyePlus (admin:admin)</option>
-                                <option value="tuya_bridge">Tuya / Smart Life (Bridge Local :8554)</option>
-                                <option value="xm_icsee">Xiongmai / iCSee (admin:vacio)</option>
-                                <option value="yoosee">Yoosee / CooCam (admin:123456)</option>
-                                <option value="camhi">CamHi / HiSilicon (/11)</option>
+                                <option value="v380" ${dev.name?.includes('V380') ? 'selected' : ''}>V380 / V380 Pro (:554/live/ch0)</option>
+                                <option value="sehmua" ${dev.name?.includes('Sehmua') ? 'selected' : ''}>Sehmua / Ubox (:554/live/ch0)</option>
+                                <option value="tapo" ${dev.name?.includes('Tapo') ? 'selected' : ''}>TP-Link Tapo (:2020/stream1)</option>
+                                <option value="icam365" ${(!dev.name?.includes('V380') && !dev.name?.includes('Sehmua') && !dev.name?.includes('Tapo')) ? 'selected' : ''}>iCam365 / EyePlus (admin:admin)</option>
+                                <option value="xm_icsee">iCSee / Xiongmai (admin:@)</option>
+                                <option value="yoosee">Yoosee (admin:123456)</option>
                                 <option value="dahua">Dahua / Imou</option>
                                 <option value="hikvision">Hikvision / Hilook</option>
                             </select>
@@ -2670,12 +3295,15 @@ function initNetworkScannerModal() {
                             <span class="device-test-feedback" id="testFeedback_${idx}" style="display: none;"></span>
                         </div>
 
-                        <div style="display: flex; gap: 0.4rem;">
-                            <button type="button" class="btn btn-xs btn-outline btn-assign-cam" data-cam="cam1" data-idx="${idx}" title="Asignar esta IP a la Cámara 1">
-                                📌 Aplicar a Cámara 1
+                        <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-xs btn-outline btn-assign-cam" data-cam="cam1" data-idx="${idx}">
+                                📌 Aplicar a Cam 1
                             </button>
-                            <button type="button" class="btn btn-xs btn-primary btn-assign-cam" data-cam="cam2" data-idx="${idx}" title="Asignar esta IP a la Cámara 2">
-                                📌 Aplicar a Cámara 2
+                            <button type="button" class="btn btn-xs btn-outline btn-assign-cam" data-cam="cam2" data-idx="${idx}">
+                                📌 Aplicar a Cam 2
+                            </button>
+                            <button type="button" class="btn btn-xs btn-primary btn-add-as-new-cam" data-idx="${idx}" style="background: #00ff66; color: #000; font-weight: 600;">
+                                ➕ Agregar como Nueva Cámara
                             </button>
                         </div>
                     </div>
@@ -2684,22 +3312,23 @@ function initNetworkScannerModal() {
 
             scannedDevicesList.appendChild(card);
 
-            // Handler para selector de plantillas
             const presetSelect = card.querySelector('.device-preset-select');
             const rtspInput = card.querySelector('.device-rtsp-input');
 
             presetSelect.addEventListener('change', () => {
                 const pVal = presetSelect.value;
-                if (pVal === 'icam365') {
+                if (pVal === 'v380') {
+                    rtspInput.value = `rtsp://admin:@${dev.ip}:554/live/ch0`;
+                } else if (pVal === 'sehmua') {
                     rtspInput.value = `rtsp://admin:admin@${dev.ip}:554/live/ch0`;
-                } else if (pVal === 'tuya_bridge') {
-                    rtspInput.value = `rtsp://localhost:8554/Cámara_de_nubes/hd`;
+                } else if (pVal === 'tapo') {
+                    rtspInput.value = `rtsp://admin:@${dev.ip}:2020/stream1`;
+                } else if (pVal === 'icam365') {
+                    rtspInput.value = `rtsp://admin:admin@${dev.ip}:554/live/ch0`;
                 } else if (pVal === 'xm_icsee') {
                     rtspInput.value = `rtsp://admin:@${dev.ip}:554/stream0`;
                 } else if (pVal === 'yoosee') {
                     rtspInput.value = `rtsp://admin:123456@${dev.ip}:554/onvif1`;
-                } else if (pVal === 'camhi') {
-                    rtspInput.value = `rtsp://admin:admin@${dev.ip}:554/11`;
                 } else if (pVal === 'dahua') {
                     rtspInput.value = `rtsp://admin:admin123@${dev.ip}:554/cam/realmonitor?channel=1&subtype=0`;
                 } else if (pVal === 'hikvision') {
@@ -2707,7 +3336,7 @@ function initNetworkScannerModal() {
                 }
             });
 
-            // Handler para botón de probar stream
+            // Probar stream individual
             const testBtn = card.querySelector('.btn-test-stream');
             const feedbackSpan = card.querySelector(`#testFeedback_${idx}`);
 
@@ -2730,7 +3359,7 @@ function initNetworkScannerModal() {
                         feedbackSpan.textContent = `✅ Video OK: ${result.resolution} (${result.latency_ms || 0}ms)`;
                     } else {
                         feedbackSpan.className = 'device-test-feedback test-error';
-                        feedbackSpan.textContent = `❌ ${result.error || 'Error de conexión'}`;
+                        feedbackSpan.textContent = `❌ ${result.error || 'Error'}`;
                     }
                 } catch (e) {
                     feedbackSpan.style.display = 'inline-block';
@@ -2742,7 +3371,7 @@ function initNetworkScannerModal() {
                 }
             });
 
-            // Handlers para asignar a Cámara 1 o Cámara 2
+            // Aplicar a Cam 1 / Cam 2 existentes
             const assignBtns = card.querySelectorAll('.btn-assign-cam');
             assignBtns.forEach(abtn => {
                 abtn.addEventListener('click', async () => {
@@ -2760,34 +3389,186 @@ function initNetworkScannerModal() {
                             body: JSON.stringify({
                                 camera_id: targetCam,
                                 rtsp_url: rtspUrl,
-                                name: `${targetCam === 'cam1' ? 'Cámara 1' : 'Cámara 2'} (${dev.ip})`
+                                name: camName
                             })
                         });
-
-                        let result = {};
-                        try {
-                            result = await res.json();
-                        } catch (parseErr) {
-                            throw new Error(`El servidor respondió con código ${res.status}. ${res.status === 404 ? 'Reinicia el servidor para cargar las nuevas rutas.' : ''}`);
-                        }
-
+                        const result = await res.json();
                         if (result.success) {
-                            alert(`✅ ¡Cámara ${targetCam.toUpperCase()} reconectada exitosamente a ${dev.ip}!`);
+                            alert(`✅ ¡${targetCam.toUpperCase()} actualizada a ${dev.ip} con éxito!`);
                             closeModal();
-                            refreshActiveFeeds();
+                            refreshActiveFeeds(true);
                             pollStatus();
                         } else {
-                            alert(`Error: ${result.error || 'No se pudo aplicar la IP'}`);
+                            alert(`Error: ${result.error || 'No se pudo aplicar'}`);
                         }
                     } catch (e) {
                         alert(`❌ ${e.message || e}`);
                     } finally {
                         abtn.disabled = false;
-                        abtn.textContent = targetCam === 'cam1' ? '📌 Aplicar a Cámara 1' : '📌 Aplicar a Cámara 2';
+                        abtn.textContent = targetCam === 'cam1' ? '📌 Aplicar a Cam 1' : '📌 Aplicar a Cam 2';
                     }
                 });
             });
+
+            // Agregar como nueva cámara ilimitada
+            const addAsNewBtn = card.querySelector('.btn-add-as-new-cam');
+            if (addAsNewBtn) {
+                addAsNewBtn.addEventListener('click', async () => {
+                    const rtspUrl = rtspInput.value.trim();
+                    const camName = dev.name || `Cámara IP (${dev.ip})`;
+
+                    addAsNewBtn.disabled = true;
+                    addAsNewBtn.textContent = 'Agregando...';
+
+                    try {
+                        const res = await fetch('/api/cameras', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: camName,
+                                rtsp_url: rtspUrl,
+                                continuous_recording: false,
+                                motion_detection: true,
+                                ai_detection: true
+                            })
+                        });
+                        const result = await res.json();
+                        if (result.success) {
+                            alert(`✅ ¡Cámara agregada al sistema con éxito! (ID: ${result.camera_id})`);
+                            closeModal();
+                            refreshDynamicCameraTabs();
+                            refreshActiveFeeds(true);
+                            pollStatus();
+                        } else {
+                            alert(`Error: ${result.error || 'No se pudo agregar'}`);
+                        }
+                    } catch (e) {
+                        alert(`❌ Error al agregar: ${e.message || e}`);
+                    } finally {
+                        addAsNewBtn.disabled = false;
+                        addAsNewBtn.textContent = '➕ Agregar como Nueva Cámara';
+                    }
+                });
+            }
         });
+    }
+
+    // Panel 3: Cargar y administrar cámaras activas
+    async function loadActiveCamerasList() {
+        if (!activeCamerasCardsList) return;
+        activeCamerasCardsList.innerHTML = '<div style="text-align: center; color: #94a3b8; padding: 1rem;">Cargando cámaras...</div>';
+
+        try {
+            const res = await fetch('/api/cameras');
+            if (!res.ok) throw new Error('Error al consultar cámaras');
+            const data = await res.json();
+            const list = data.cameras || [];
+
+            if (wizActiveCount) wizActiveCount.textContent = `${list.length}`;
+            activeCamerasCardsList.innerHTML = '';
+
+            if (list.length === 0) {
+                activeCamerasCardsList.innerHTML = '<div style="color: #94a3b8; text-align: center; padding: 1.5rem;">No hay cámaras configuradas.</div>';
+                return;
+            }
+
+            list.forEach(cam => {
+                const card = document.createElement('div');
+                card.className = 'camera-manage-card';
+
+                const onlineBadge = cam.online
+                    ? '<span class="cam-meta-badge badge-online">🟢 Conectada</span>'
+                    : '<span class="cam-meta-badge badge-offline">🔴 Desconectada</span>';
+
+                const recBadge = cam.continuous_recording
+                    ? '<span class="cam-meta-badge" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">REC 24/7</span>'
+                    : '<span class="cam-meta-badge" style="color: #00ff66; border-color: rgba(0, 255, 102, 0.3);">Modo MicroSD (Eventos)</span>';
+
+                card.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 240px;">
+                        <span style="font-size: 1.5rem;">📹</span>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                                <strong style="color: #f8fafc; font-size: 0.88rem;">${cam.name}</strong>
+                                <span style="font-size: 0.7rem; font-family: var(--font-mono); color: #94a3b8;">[${cam.id}]</span>
+                                ${onlineBadge}
+                                ${recBadge}
+                            </div>
+                            <div style="font-size: 0.72rem; color: #64748b; font-family: var(--font-mono); margin-top: 0.15rem; word-break: break-all;">
+                                ${cam.rtsp_url}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 0.4rem; align-items: center;">
+                        <button type="button" class="btn btn-xs btn-outline btn-toggle-rec-cam" data-id="${cam.id}" data-rec="${cam.continuous_recording}">
+                            ${cam.continuous_recording ? '🎯 Cambiar a MicroSD' : '📼 Cambiar a 24/7'}
+                        </button>
+                        <button type="button" class="btn btn-xs btn-outline btn-delete-cam" data-id="${cam.id}" data-name="${cam.name}" style="border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;">
+                            🗑️ Eliminar
+                        </button>
+                    </div>
+                `;
+
+                activeCamerasCardsList.appendChild(card);
+
+                // Alternar modo de grabación individual
+                const toggleRecBtn = card.querySelector('.btn-toggle-rec-cam');
+                toggleRecBtn.addEventListener('click', async () => {
+                    const newContinuous = !cam.continuous_recording;
+                    toggleRecBtn.disabled = true;
+                    try {
+                        const r = await fetch('/api/cameras', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                id: cam.id,
+                                continuous_recording: newContinuous
+                            })
+                        });
+                        const resData = await r.json();
+                        if (resData.success) {
+                            loadActiveCamerasList();
+                            pollStatus();
+                        } else {
+                            alert(`Error: ${resData.error || 'No se pudo actualizar'}`);
+                        }
+                    } catch (e) {
+                        alert(`❌ ${e.message || e}`);
+                    } finally {
+                        toggleRecBtn.disabled = false;
+                    }
+                });
+
+                // Eliminar cámara
+                const delBtn = card.querySelector('.btn-delete-cam');
+                delBtn.addEventListener('click', async () => {
+                    if (!confirm(`¿Estás seguro de eliminar la cámara "${cam.name}" (${cam.id}) del sistema?`)) return;
+                    delBtn.disabled = true;
+                    try {
+                        const r = await fetch(`/api/cameras/${cam.id}`, { method: 'DELETE' });
+                        const resData = await r.json();
+                        if (resData.success) {
+                            loadActiveCamerasList();
+                            refreshDynamicCameraTabs();
+                            refreshActiveFeeds(true);
+                            pollStatus();
+                        } else {
+                            alert(`Error: ${resData.error || 'No se pudo eliminar'}`);
+                        }
+                    } catch (e) {
+                        alert(`❌ ${e.message || e}`);
+                    } finally {
+                        delBtn.disabled = false;
+                    }
+                });
+            });
+        } catch (e) {
+            console.error('Error cargando cámaras activas:', e);
+            if (activeCamerasCardsList) {
+                activeCamerasCardsList.innerHTML = `<div style="color: #f87171; text-align: center; padding: 1rem;">❌ Error cargando lista: ${e.message || e}</div>`;
+            }
+        }
     }
 
     // Diagnóstico Manual
@@ -2849,12 +3630,7 @@ function initNetworkScannerModal() {
                     rtsp_url: rtspUrl
                 })
             });
-            let result = {};
-            try {
-                result = await res.json();
-            } catch (pe) {
-                throw new Error(`Código ${res.status}`);
-            }
+            const result = await res.json();
             if (result.success) {
                 alert(`✅ ¡${targetCam.toUpperCase()} configurada y reconectada con éxito!`);
                 closeModal();
@@ -2871,13 +3647,54 @@ function initNetworkScannerModal() {
     if (assignManualCam1Btn) assignManualCam1Btn.addEventListener('click', () => assignManualUrl('cam1'));
     if (assignManualCam2Btn) assignManualCam2Btn.addEventListener('click', () => assignManualUrl('cam2'));
 
-    // Botones de Restauración de Fábrica / Defaults
+    if (btnAddNewManualCam) {
+        btnAddNewManualCam.addEventListener('click', async () => {
+            const rtspUrl = manualRtspInput ? manualRtspInput.value.trim() : '';
+            if (!rtspUrl) {
+                alert('Ingresa una URL RTSP o índice de cámara primero');
+                return;
+            }
+            const name = prompt('Nombre para esta nueva cámara:', 'Cámara Extra');
+            if (!name) return;
+
+            btnAddNewManualCam.disabled = true;
+            try {
+                const res = await fetch('/api/cameras', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: name,
+                        rtsp_url: rtspUrl,
+                        continuous_recording: false,
+                        motion_detection: true,
+                        ai_detection: true
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert(`✅ ¡Cámara "${name}" agregada con éxito!`);
+                    closeModal();
+                    refreshDynamicCameraTabs();
+                    refreshActiveFeeds(true);
+                    pollStatus();
+                } else {
+                    alert(`Error: ${result.error || 'No se pudo agregar'}`);
+                }
+            } catch (e) {
+                alert(`❌ Error al agregar: ${e.message || e}`);
+            } finally {
+                btnAddNewManualCam.disabled = false;
+            }
+        });
+    }
+
+    // Botones de Restauración de Fábrica
     const btnRestoreCam1Tuya = document.getElementById('btnRestoreCam1Tuya');
     const btnRestoreCam2Icam = document.getElementById('btnRestoreCam2Icam');
 
     if (btnRestoreCam1Tuya) {
         btnRestoreCam1Tuya.addEventListener('click', async () => {
-            if (!confirm('¿Deseas restaurar Cámara 1 a la configuración original de Tuya Bridge (rtsp://localhost:8554/Cámara_de_nubes/hd)?')) return;
+            if (!confirm('¿Deseas restaurar Cámara 1 a Tuya Bridge (rtsp://localhost:8554/Cámara_de_nubes/hd)?')) return;
             try {
                 const res = await fetch('/api/scanner/apply', {
                     method: 'POST',
@@ -2894,8 +3711,6 @@ function initNetworkScannerModal() {
                     closeModal();
                     refreshActiveFeeds();
                     pollStatus();
-                } else {
-                    alert(`Error: ${result.error || 'No se pudo restaurar'}`);
                 }
             } catch (e) {
                 alert(`❌ Error: ${e.message || e}`);
@@ -2930,6 +3745,9 @@ function initNetworkScannerModal() {
             }
         });
     }
+
+    // Iniciar con la marca V380 seleccionada
+    applyBrandProfile('v380');
 }
 
 // Inicialización al cargar la página
@@ -2954,8 +3772,9 @@ document.addEventListener('DOMContentLoaded', () => {
     initScheduleControls();
     initPerCameraControls();
     initSystemCapabilities();
+    initStorageOptimizationModal();
     initNetworkScannerModal();
+    refreshDynamicCameraTabs();
     pollStatus();
     setInterval(pollStatus, 2500);
 });
-

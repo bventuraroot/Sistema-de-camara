@@ -200,37 +200,8 @@ def save_setting(key, value):
                 try: tmp_file.unlink()
                 except Exception: pass
 
-# Diccionario de cámaras del sistema
-cameras = {
-    'cam1': {
-        'id': 'cam1',
-        'name': 'Cámara 1 (Tuya PTZ)',
-        'rtsp_url': os.getenv('RTSP_URL', 'rtsp://localhost:8554/Cámara_de_nubes/hd'),
-        'has_ptz': True,
-        'stream': None,
-        'motion': None,
-        'recorder': None,
-        'cached_detections': [],
-        'cached_motion_boxes': [],
-        'ai_fps': 0.0,
-        'last_alert_time': 0,
-        'lock': threading.Lock()
-    },
-    'cam2': {
-        'id': 'cam2',
-        'name': 'Cámara 2 (iCam365)',
-        'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch1'),
-        'has_ptz': False,
-        'stream': None,
-        'motion': None,
-        'recorder': None,
-        'cached_detections': [],
-        'cached_motion_boxes': [],
-        'ai_fps': 0.0,
-        'last_alert_time': 0,
-        'lock': threading.Lock()
-    }
-}
+# Diccionario de cámaras del sistema (se inicializa y gestiona dinámicamente desde settings.json)
+cameras = {}
 
 # Componentes globales compartidos
 object_detector = None
@@ -320,13 +291,15 @@ def is_motion_capture_allowed(item_type='clip', camera_id='cam1'):
 
 def camera_ai_worker(cid):
     """Hilo de procesamiento inteligente por cámara (Movimiento + YOLOv8 + Auto-Tracking)."""
+    if cid not in cameras:
+        return
     cam = cameras[cid]
-    logger.info(f"Iniciando hilo de inferencia IA para {cam['name']} ({cid})")
+    logger.info(f"Iniciando hilo de inferencia IA para {cam.get('name', cid)} ({cid})")
     fps_timestamps = []
     
-    while ai_worker_running:
+    while ai_worker_running and cam.get('_worker_active', True) and cid in cameras:
         try:
-            stream = cam['stream']
+            stream = cam.get('stream')
             if stream is None or not stream.is_connected():
                 time.sleep(0.2)
                 continue
@@ -496,10 +469,12 @@ def camera_ai_worker(cid):
 
 def camera_recording_feeder(cid):
     """Alimenta la grabación continua 24/7 y buffer de eventos de cada cámara calibrado a 15 FPS."""
+    if cid not in cameras:
+        return
     cam = cameras[cid]
-    logger.info(f"Hilo de grabación y eventos iniciado para {cam['name']}")
+    logger.info(f"Hilo de grabación y eventos iniciado para {cam.get('name', cid)}")
     last_fid = -1
-    while ai_worker_running:
+    while ai_worker_running and cam.get('_worker_active', True) and cid in cameras:
         try:
             stream = cam.get('stream')
             rec = cam.get('recorder')
@@ -530,6 +505,247 @@ def camera_recording_feeder(cid):
             logger.error(f"Error en feeder ({cid}): {e}")
             time.sleep(0.5)
 
+def setup_camera_instance(cid, cam_conf, settings=None):
+    """Inicializa o actualiza los componentes de una cámara individual (Stream, Motion, Recorder, Threads)."""
+    global ptz_controller, icam_ptz
+    if settings is None:
+        settings = get_all_settings()
+    
+    effective_profile = system_profiler.active_profile if system_profiler else 'balanced'
+    base_rec_dir = str(get_storage_dir())
+    seg_min = int(os.getenv('SEGMENT_MINUTES', 10))
+    max_days = int(settings.get('max_recording_days', os.getenv('MAX_RECORDING_DAYS', 30)))
+    
+    # Perfil de compresión de video (Ahorro MicroSD vs Continuo VBR vs Alta Calidad)
+    storage_prof = settings.get('storage_profile', 'microsd_events')
+    if storage_prof == 'microsd_events':
+        default_cont = False
+        crf = 28
+        fps = 15.0
+        maxrate = 1000
+    elif storage_prof == 'smart_vbr':
+        default_cont = True
+        crf = 28
+        fps = 12.0
+        maxrate = 800
+    else:  # high_quality
+        default_cont = True
+        crf = 24
+        fps = 15.0
+        maxrate = 2000
+
+    cont_rec = cam_conf.get('continuous_recording', default_cont)
+
+    cam = cameras.setdefault(cid, {
+        'id': cid,
+        'name': cam_conf.get('name', f'Cámara {cid}'),
+        'rtsp_url': cam_conf.get('rtsp_url', ''),
+        'fallback_url': cam_conf.get('fallback_url'),
+        'has_ptz': cam_conf.get('ptz', False),
+        'brand': cam_conf.get('brand', 'generic'),
+        'stream': None,
+        'motion': None,
+        'recorder': None,
+        'cached_detections': [],
+        'cached_motion_boxes': [],
+        'ai_fps': 0.0,
+        'last_alert_time': 0,
+        'lock': threading.Lock(),
+        '_worker_active': True,
+        '_threads_started': False
+    })
+
+    cam['name'] = cam_conf.get('name', cam.get('name', cid))
+    cam['rtsp_url'] = cam_conf.get('rtsp_url', cam.get('rtsp_url', ''))
+    cam['fallback_url'] = cam_conf.get('fallback_url', cam.get('fallback_url'))
+    cam['has_ptz'] = cam_conf.get('ptz', cam.get('has_ptz', False))
+    cam['brand'] = cam_conf.get('brand', cam.get('brand', 'generic'))
+    cam['_worker_active'] = True
+
+    if effective_profile == 'light' or not (object_detector and object_detector.is_available()):
+        cam['ai_filter'] = False
+        cam['auto_tracking'] = False
+    else:
+        cam['ai_filter'] = cam_conf.get('ai_filter', settings.get('ai_motion_only', True))
+        cam['auto_tracking'] = cam_conf.get('auto_tracking', True)
+
+    cam['event_recording'] = cam_conf.get('event_recording', True)
+    cam['continuous_recording'] = cont_rec
+    cam['motion_detection'] = cam_conf.get('motion_detection', settings.get('motion_detection', True))
+
+    # Detener stream previo si existía
+    if cam.get('stream'):
+        try: cam['stream'].stop()
+        except Exception: pass
+
+    # Iniciar VideoStream
+    cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam.get('fallback_url'))
+
+    # Detector de movimiento
+    m_thresh = cam_conf.get('motion_threshold', settings.get('motion_threshold', 4000))
+    m_det = MotionDetector(threshold=m_thresh)
+    m_det.set_ai_filter(cam['ai_filter'])
+    if not cam['motion_detection']:
+        m_det.active = False
+    cam['motion'] = m_det
+
+    # Grabador
+    if cam.get('recorder'):
+        try: cam['recorder'].stop()
+        except Exception: pass
+
+    cam_dir = os.path.join(base_rec_dir, cid)
+    cam_has_mic = (cid == 'cam1')
+    max_storage_gb = float(settings.get('max_storage_gb', 100.0))
+    auto_recycle = bool(settings.get('auto_recycle_enabled', True))
+    recycle_ratio = float(settings.get('recycle_target_ratio', 0.90))
+
+    cam['recorder'] = Recorder(
+        output_dir=cam_dir,
+        rtsp_url=cam['rtsp_url'],
+        segment_minutes=seg_min,
+        max_days=max_days,
+        continuous=cam['continuous_recording'],
+        has_audio=cam_has_mic,
+        crf=crf,
+        preset='veryfast',
+        fps=fps,
+        max_bitrate_kbps=maxrate,
+        max_storage_gb=max_storage_gb,
+        auto_recycle=auto_recycle,
+        recycle_target_ratio=recycle_ratio
+    )
+
+    # Iniciar hilos de trabajo si no están corriendo para esta cámara
+    if not cam.get('_threads_started'):
+        t_ai = threading.Thread(target=camera_ai_worker, args=(cid,), daemon=True, name=f"ai-{cid}")
+        t_ai.start()
+        t_rec = threading.Thread(target=camera_recording_feeder, args=(cid,), daemon=True, name=f"rec-{cid}")
+        t_rec.start()
+        cam['_threads_started'] = True
+
+    logger.info(f"✅ Cámara configurada: {cid} ({cam['name']}) -> {cam['rtsp_url']} (24/7={cam['continuous_recording']}, Eventos={cam['event_recording']})")
+    return cam
+
+def remove_camera_instance(cid):
+    """Elimina una cámara en tiempo de ejecución, cerrando streams y liberando memoria."""
+    if cid not in cameras:
+        return False
+    cam = cameras[cid]
+    cam['_worker_active'] = False
+    if cam.get('stream'):
+        try: cam['stream'].stop()
+        except Exception as e: logger.warning(f"Error deteniendo stream {cid}: {e}")
+    if cam.get('recorder'):
+        try: cam['recorder'].stop()
+        except Exception as e: logger.warning(f"Error deteniendo grabador {cid}: {e}")
+    
+    cameras.pop(cid, None)
+    
+    # Remover de settings.json
+    settings = get_all_settings()
+    sc = settings.get('cameras', {})
+    if cid in sc:
+        sc.pop(cid, None)
+        save_setting('cameras', sc)
+    logger.info(f"🗑️ Cámara eliminada exitosamente: {cid}")
+    return True
+
+def get_system_ram_metrics():
+    """Calcula el uso de RAM del proceso y del sistema de forma multiplataforma y sin dependencias externas."""
+    ram_mb = 0.0
+    try:
+        import psutil
+        proc = psutil.Process()
+        ram_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        try:
+            import resource
+            usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == 'darwin':
+                ram_mb = round(usage / (1024 * 1024), 1)
+            else:
+                ram_mb = round(usage / 1024, 1)
+        except Exception:
+            ram_mb = 0.0
+
+    status = 'optimal'
+    if ram_mb > 1500:
+        status = 'high'
+    elif ram_mb > 800:
+        status = 'moderate'
+        
+    return {
+        'process_ram_mb': ram_mb,
+        'status': status
+    }
+
+def get_combined_storage_info():
+    """Retorna información de almacenamiento consolidada, cuota en disco (ej. 100 GB) y métricas de RAM."""
+    settings = get_all_settings()
+    base_dir = get_storage_dir()
+    max_storage_gb = float(settings.get('max_storage_gb', 100.0))
+    auto_recycle = bool(settings.get('auto_recycle_enabled', True))
+    recycle_ratio = float(settings.get('recycle_target_ratio', 0.90))
+
+    # 1. Calcular tamaño de grabaciones acumulado en todas las cámaras
+    total_rec_bytes = 0
+    for c in cameras.values():
+        rec = c.get('recorder')
+        if rec and hasattr(rec, 'get_recordings_size_bytes'):
+            total_rec_bytes += rec.get_recordings_size_bytes()
+    
+    # Si aún no hay grabadores inicializados o está en 0, calcular sobre base_dir
+    if total_rec_bytes == 0 and base_dir.exists():
+        try:
+            for entry in base_dir.rglob('*'):
+                if entry.is_file():
+                    try:
+                        total_rec_bytes += entry.stat().st_size
+                    except (OSError, FileNotFoundError):
+                        pass
+        except Exception:
+            pass
+
+    rec_used_gb = round(total_rec_bytes / (1024**3), 2)
+    quota_pct = int((rec_used_gb / max_storage_gb) * 100) if max_storage_gb > 0 else 0
+    quota_free_gb = max(0.0, round(max_storage_gb - rec_used_gb, 2))
+
+    # 2. Espacio de disco físico
+    tot_disk, used_disk, free_disk = 0, 0, 0
+    pct_disk = 0
+    try:
+        tot, used, free = shutil.disk_usage(str(base_dir))
+        tot_disk = round(tot / (1024**3), 1)
+        used_disk = round(used / (1024**3), 1)
+        free_disk = round(free / (1024**3), 1)
+        pct_disk = int((used / tot) * 100) if tot > 0 else 0
+    except Exception:
+        pass
+
+    ram_metrics = get_system_ram_metrics()
+
+    return {
+        'path': str(base_dir),
+        'total_gb': tot_disk,
+        'used_gb': used_disk,
+        'free_gb': free_disk,
+        'percent_used': pct_disk,
+        # Métricas de Cuota Dedicada (Ring Buffer FIFO)
+        'recordings_used_gb': rec_used_gb,
+        'recordings_used_bytes': total_rec_bytes,
+        'max_storage_gb': max_storage_gb,
+        'quota_percent': min(100, quota_pct),
+        'quota_free_gb': quota_free_gb,
+        'auto_recycle_enabled': auto_recycle,
+        'recycle_target_ratio': recycle_ratio,
+        'storage_profile': settings.get('storage_profile', 'microsd_events'),
+        'max_recording_days': settings.get('max_recording_days', 15),
+        # Métricas de Memoria RAM
+        'ram_process_mb': ram_metrics['process_ram_mb'],
+        'ram_status': ram_metrics['status']
+    }
+
 def init_components():
     global object_detector, alert_system, ptz_controller, icam_ptz, system_profiler
     
@@ -550,51 +766,30 @@ def init_components():
         
     alert_system = AlertSystem(cooldown=int(os.getenv('ALERT_COOLDOWN', 5)))
     
-    # 2. Inicializar cámaras y grabadores
-    base_rec_dir = str(get_storage_dir())
-    seg_min = int(os.getenv('SEGMENT_MINUTES', 10))
-    max_days = int(settings.get('max_recording_days', os.getenv('MAX_RECORDING_DAYS', 30)))
-    cont_rec = settings.get('continuous_recording', False)
-    
+    # 2. Inicializar cámaras y grabadores dinámicamente desde settings.json
     saved_cams = settings.get('cameras', {})
-    for cid, cam in cameras.items():
-        cam_conf = saved_cams.get(cid, {})
-        if cid in saved_cams:
-            cam['name'] = cam_conf.get('name', cam['name'])
-            cam['rtsp_url'] = cam_conf.get('rtsp_url', cam['rtsp_url'])
-        
-        # Ajustes individuales por cámara (auto-acomodados al perfil)
-        if effective_profile == 'light' or not object_detector.is_available():
-            cam['ai_filter'] = False
-            cam['auto_tracking'] = False
-        else:
-            cam['ai_filter'] = cam_conf.get('ai_filter', settings.get('ai_motion_only', True))
-            cam['auto_tracking'] = cam_conf.get('auto_tracking', True)
+    if not saved_cams:
+        saved_cams = {
+            'cam1': {
+                'id': 'cam1',
+                'name': 'Cámara 1 (Tuya PTZ)',
+                'rtsp_url': os.getenv('RTSP_URL', 'rtsp://localhost:8554/Cámara_de_nubes/hd'),
+                'ptz': True,
+                'continuous_recording': False
+            },
+            'cam2': {
+                'id': 'cam2',
+                'name': 'Cámara 2 (iCam365)',
+                'rtsp_url': os.getenv('RTSP_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/live/ch0'),
+                'fallback_url': os.getenv('FALLBACK_URL_CAM2', 'rtsp://admin:admin@192.168.1.18:554/0/av1'),
+                'ptz': True,
+                'continuous_recording': False
+            }
+        }
+        save_setting('cameras', saved_cams)
 
-        cam['event_recording'] = cam_conf.get('event_recording', True)
-        cam['continuous_recording'] = cam_conf.get('continuous_recording', cont_rec)
-        cam['motion_detection'] = cam_conf.get('motion_detection', settings.get('motion_detection', True))
-        
-        logger.info(f"Iniciando {cam['name']} -> {cam['rtsp_url']} (Tracking: {cam['auto_tracking']}, EventRec: {cam['event_recording']}, 24/7: {cam['continuous_recording']})")
-        cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam_conf.get('fallback_url'))
-        
-        m_thresh = cam_conf.get('motion_threshold', settings.get('motion_threshold', 4000))
-        m_det = MotionDetector(threshold=m_thresh)
-        m_det.set_ai_filter(cam['ai_filter'])
-        if not cam['motion_detection']:
-            m_det.active = False
-        cam['motion'] = m_det
-        
-        cam_dir = os.path.join(base_rec_dir, cid)
-        cam_has_mic = (cid == 'cam1')  # Cámara 1 dispone de micrófono en su stream RTSP
-        cam['recorder'] = Recorder(
-            output_dir=cam_dir,
-            rtsp_url=cam['rtsp_url'],
-            segment_minutes=seg_min,
-            max_days=max_days,
-            continuous=cam['continuous_recording'],
-            has_audio=cam_has_mic
-        )
+    for cid, cam_conf in list(saved_cams.items()):
+        setup_camera_instance(cid, cam_conf, settings=settings)
     
     # 3. Controlador PTZ para Cámara 1 (Tuya)
     bridge_url = os.getenv('TUYA_BRIDGE_URL', 'http://localhost:8787')
@@ -621,7 +816,8 @@ def init_components():
         password=cam2_pwd,
         ip_getter=get_cam2_live_ip
     )
-    cameras['cam2']['has_ptz'] = True
+    if 'cam2' in cameras:
+        cameras['cam2']['has_ptz'] = True
 
     # Cargar demoras de retorno al Punto Central por cámara
     cam1_delay = saved_cams.get('cam1', {}).get('home_return_delay', 5)
@@ -629,15 +825,7 @@ def init_components():
     cam2_delay = saved_cams.get('cam2', {}).get('home_return_delay', 5)
     if icam_ptz: icam_ptz.set_home_delay(cam2_delay)
     
-    # 5. Lanzar hilos de trabajo independientes
-    for cid in cameras:
-        t_ai = threading.Thread(target=camera_ai_worker, args=(cid,), daemon=True, name=f"ai-{cid}")
-        t_ai.start()
-        
-        t_rec = threading.Thread(target=camera_recording_feeder, args=(cid,), daemon=True, name=f"rec-{cid}")
-        t_rec.start()
-    
-    logger.info("Sistema Multi-Cámara (Tuya + iCam365) completamente inicializado.")
+    logger.info(f"Sistema Multi-Cámara completamente inicializado ({len(cameras)} cámaras activas).")
 
 # ----------------- RUTAS DE VIDEO MJPEG Y RESOLUCIONES -----------------
 
@@ -669,9 +857,11 @@ def generate_frames(camera_id='cam1', quality_mode='480p'):
     NOTA CRÍTICA: Este flujo es EXCLUSIVAMENTE para la visualización en navegadores web.
     Las grabaciones continuas (24/7) y clips de eventos se realizan SIEMPRE a máxima resolución nativa (1080p).
     """
-    cam = cameras.get(camera_id, cameras['cam1'])
-    stream = cam['stream']
-    motion_det = cam['motion']
+    cam = cameras.get(camera_id) or next(iter(cameras.values()), None)
+    if cam is None:
+        return
+    stream = cam.get('stream')
+    motion_det = cam.get('motion')
     
     target_size, jpeg_q, quality_key = resolve_quality_params(quality_mode)
     last_frame_id = -1
@@ -791,7 +981,10 @@ def camera_live_frame(camera_id):
     Diseñado para clientes móviles y Cero Lag con bucle Canvas (latencia estricta de 30-50ms sin acumulación de búfer).
     """
     if camera_id not in cameras:
-        camera_id = 'cam1'
+        cam = next(iter(cameras.values()), None)
+        if not cam:
+            return ('', 204)
+        camera_id = cam['id']
     cam = cameras[camera_id]
     stream = cam.get('stream')
     if stream is None or not stream.is_connected():
@@ -1069,6 +1262,81 @@ def settings_retention():
             'auto_purge_enabled': settings.get('auto_purge_enabled', True)
         })
 
+@app.route('/api/settings/storage-quota', methods=['GET', 'POST'])
+def settings_storage_quota():
+    """Consulta o configura la cuota de grabación en GB (Ring Buffer FIFO) y política de auto-reciclaje."""
+    if request.method == 'POST':
+        data = request.json or {}
+        max_storage_gb = data.get('max_storage_gb')
+        auto_recycle = data.get('auto_recycle_enabled', True)
+        recycle_ratio = data.get('recycle_target_ratio', 0.90)
+
+        if max_storage_gb is None:
+            return jsonify({'success': False, 'error': 'Falta el parámetro max_storage_gb'}), 400
+
+        try:
+            quota_float = max(1.0, float(max_storage_gb))
+            recycle_bool = bool(auto_recycle)
+            ratio_float = min(0.98, max(0.50, float(recycle_ratio)))
+
+            save_setting('max_storage_gb', quota_float)
+            save_setting('auto_recycle_enabled', recycle_bool)
+            save_setting('recycle_target_ratio', ratio_float)
+
+            # Actualizar instancias de grabadores en tiempo de ejecución
+            for c in cameras.values():
+                rec = c.get('recorder')
+                if rec and hasattr(rec, 'set_storage_quota'):
+                    rec.set_storage_quota(quota_float, recycle_bool, ratio_float)
+
+            invalidate_storage_cache()
+            logger.info(f"Cuota de almacenamiento guardada: {quota_float} GB (FIFO: {recycle_bool}, Ratio: {ratio_float})")
+            return jsonify({
+                'success': True,
+                'max_storage_gb': quota_float,
+                'auto_recycle_enabled': recycle_bool,
+                'recycle_target_ratio': ratio_float,
+                'message': f'Cuota configurada a {quota_float} GB con auto-reciclaje en anillo activo.'
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 400
+    else:
+        settings = get_all_settings()
+        return jsonify({
+            'max_storage_gb': float(settings.get('max_storage_gb', 100.0)),
+            'auto_recycle_enabled': bool(settings.get('auto_recycle_enabled', True)),
+            'recycle_target_ratio': float(settings.get('recycle_target_ratio', 0.90))
+        })
+
+@app.route('/api/storage/recycle-now', methods=['POST'])
+def storage_recycle_now():
+    """Dispara manualmente una pasada de auto-reciclaje FIFO para liberar espacio según la cuota configurada."""
+    try:
+        total_freed_bytes = 0
+        total_recycled_files = 0
+        for c in cameras.values():
+            rec = c.get('recorder')
+            if rec and hasattr(rec, 'auto_recycle_fifo'):
+                res = rec.auto_recycle_fifo()
+                total_freed_bytes += res.get('freed_bytes', 0)
+                total_recycled_files += res.get('recycled_files', 0)
+        
+        invalidate_storage_cache()
+        freed_gb = round(total_freed_bytes / (1024**3), 2)
+        freed_mb = round(total_freed_bytes / (1024 * 1024), 1)
+        
+        return jsonify({
+            'success': True,
+            'recycled_files': total_recycled_files,
+            'freed_bytes': total_freed_bytes,
+            'freed_mb': freed_mb,
+            'freed_gb': freed_gb,
+            'message': f'Auto-reciclaje completado: {total_recycled_files} archivos eliminados ({freed_gb} GB liberados).'
+        })
+    except Exception as e:
+        logger.error(f"Error ejecutando reciclaje manual: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ----------------- RUTAS DE LA API Y WEB -----------------
 
 @app.route('/')
@@ -1128,8 +1396,10 @@ def status():
             'stream_fallback': st.is_using_fallback() if st and hasattr(st, 'is_using_fallback') else False
         }
     
-    # Almacenamiento combinado
-    storage = cameras['cam1']['recorder'].get_storage_info() if cameras['cam1']['recorder'] else {}
+    # Almacenamiento consolidado
+    storage = get_combined_storage_info()
+    first_cid = next(iter(cameras.keys()), 'cam1')
+    sched_allowed, sched_msg = is_motion_capture_allowed('clip', first_cid)
     
     return jsonify({
         'camera': total_online,
@@ -1137,10 +1407,10 @@ def status():
         'lan_ip': lan_ip,
         'local_url': f"http://{lan_ip}:{port}",
         'port': port,
-        'motion_detection': any(c['motion'].is_active() for c in cameras.values() if c['motion']),
+        'motion_detection': any(c['motion'].is_active() for c in cameras.values() if c.get('motion')),
         'object_detection': object_detector.is_active() if object_detector else False,
-        'ai_motion_only': any(c['motion'].is_ai_filter_enabled() for c in cameras.values() if c['motion']),
-        'continuous_recording': any(c['recorder'].is_continuous_active() for c in cameras.values() if c['recorder']),
+        'ai_motion_only': any(c['motion'].is_ai_filter_enabled() for c in cameras.values() if c.get('motion')),
+        'continuous_recording': any(c['recorder'].is_continuous_active() for c in cameras.values() if c.get('recorder')),
         'auto_tracking': ptz_controller.is_active() if ptz_controller else False,
         'ptz_status': ptz_controller.get_status() if ptz_controller else {},
         'icam_ptz_status': icam_ptz.get_status() if icam_ptz else {},
@@ -1149,13 +1419,14 @@ def status():
             'start_time': settings.get('motion_schedule', {}).get('start_time', '22:00'),
             'end_time': settings.get('motion_schedule', {}).get('end_time', '06:00'),
             'days': settings.get('motion_schedule', {}).get('days', [0, 1, 2, 3, 4, 5, 6]),
-            'target_cameras': settings.get('motion_schedule', {}).get('target_cameras', ['cam1', 'cam2']),
+            'target_cameras': settings.get('motion_schedule', {}).get('target_cameras', list(cameras.keys())),
             'apply_to_clips': settings.get('motion_schedule', {}).get('apply_to_clips', True),
             'apply_to_snapshots': settings.get('motion_schedule', {}).get('apply_to_snapshots', True),
-            'is_active_now': is_motion_capture_allowed('clip', 'cam1')[0],
-            'status_message': is_motion_capture_allowed('clip', 'cam1')[1]
+            'is_active_now': sched_allowed,
+            'status_message': sched_msg
         },
         'storage': storage,
+        'storage_profile': settings.get('storage_profile', 'microsd_events'),
         'system_profile': system_profiler.get_summary() if system_profiler else SystemProfiler().get_summary(),
         'timestamp': datetime.now().isoformat()
     })
@@ -1441,8 +1712,236 @@ def restart_camera_route(cid):
             logger.warning(f"Error al detener stream {cid}: {e}")
     
     time.sleep(0.5)
-    cam['stream'] = VideoStream(cam['rtsp_url'], fallback_url=cam.get('fallback_url'))
-    return jsonify({'success': True, 'message': f'Cámara {cid} reiniciada correctamente'})
+# ----------------- GESTIÓN DINÁMICA MULTI-CÁMARA Y PERFILES DE ALMACENAMIENTO -----------------
+
+@app.route('/api/cameras', methods=['GET'])
+def list_cameras():
+    """Retorna la lista de todas las cámaras activas y su estado en tiempo real."""
+    settings = get_all_settings()
+    res = []
+    for cid, c in list(cameras.items()):
+        st = c.get('stream')
+        online = st.is_connected() if st else False
+        res.append({
+            'id': cid,
+            'name': c.get('name', cid),
+            'rtsp_url': c.get('rtsp_url', ''),
+            'fallback_url': c.get('fallback_url'),
+            'brand': c.get('brand', 'generic'),
+            'online': online,
+            'has_ptz': c.get('has_ptz', False),
+            'stream_fps': round(st.get_fps(), 1) if st else 0.0,
+            'ai_fps': round(c.get('ai_fps', 0.0), 1),
+            'resolution': st.get_resolution() if st else {'width': 0, 'height': 0},
+            'continuous_recording': c.get('continuous_recording', False),
+            'event_recording': c.get('event_recording', True),
+            'motion_detection': c.get('motion_detection', True),
+            'ai_filter': c['motion'].is_ai_filter_enabled() if c.get('motion') else True,
+            'auto_tracking': c.get('auto_tracking', True),
+            'motion_threshold': c['motion'].threshold if c.get('motion') else 4000
+        })
+    return jsonify({
+        'success': True,
+        'count': len(res),
+        'storage_profile': settings.get('storage_profile', 'microsd_events'),
+        'cameras': res
+    })
+
+@app.route('/api/cameras', methods=['POST'])
+def add_or_update_camera():
+    """Agrega una nueva cámara o actualiza una existente en tiempo de ejecución sin reiniciar el servidor."""
+    data = request.get_json(force=True, silent=True) or {}
+    rtsp_url = data.get('rtsp_url', '').strip()
+    if not rtsp_url:
+        return jsonify({'success': False, 'error': 'La URL RTSP es obligatoria'}), 400
+
+    cid = data.get('id', '').strip()
+    if not cid:
+        # Generar un ID secuencial automático (cam3, cam4...)
+        idx = 1
+        while f"cam{idx}" in cameras:
+            idx += 1
+        cid = f"cam{idx}"
+
+    name = data.get('name', '').strip() or f"Cámara {cid.upper()}"
+    fallback_url = data.get('fallback_url', '').strip() or None
+    brand = data.get('brand', 'generic').strip()
+    has_ptz = bool(data.get('ptz', False))
+    cont_rec = bool(data.get('continuous_recording', False))
+
+    settings = get_all_settings()
+    sc = settings.get('cameras', {})
+    cam_conf = {
+        'id': cid,
+        'name': name,
+        'rtsp_url': rtsp_url,
+        'fallback_url': fallback_url,
+        'brand': brand,
+        'ptz': has_ptz,
+        'continuous_recording': cont_rec,
+        'event_recording': data.get('event_recording', True),
+        'motion_detection': data.get('motion_detection', True),
+        'ai_filter': data.get('ai_filter', settings.get('ai_motion_only', True)),
+        'auto_tracking': data.get('auto_tracking', True),
+        'motion_threshold': data.get('motion_threshold', 4000),
+        'home_return_delay': float(data.get('home_return_delay', 5.0))
+    }
+    sc[cid] = cam_conf
+    save_setting('cameras', sc)
+
+    try:
+        setup_camera_instance(cid, cam_conf, settings=settings)
+        return jsonify({
+            'success': True,
+            'message': f"Cámara '{name}' ({cid}) añadida e iniciada exitosamente",
+            'camera_id': cid,
+            'camera': cam_conf
+        })
+    except Exception as e:
+        logger.error(f"Error inicializando cámara {cid}: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/cameras/<cid>', methods=['DELETE'])
+def delete_camera_route(cid):
+    """Elimina una cámara en tiempo de ejecución, cerrando streams y liberando memoria."""
+    if cid not in cameras:
+        return jsonify({'success': False, 'error': f'Cámara {cid} no existe'}), 404
+    
+    name = cameras[cid].get('name', cid)
+    removed = remove_camera_instance(cid)
+    if removed:
+        return jsonify({
+            'success': True,
+            'message': f"Cámara '{name}' ({cid}) eliminada correctamente",
+            'camera_id': cid
+        })
+    return jsonify({'success': False, 'error': 'No se pudo eliminar la cámara'}), 500
+
+@app.route('/api/settings/storage-profile', methods=['GET', 'POST'])
+def storage_profile_route():
+    """Consulta o actualiza el perfil global de almacenamiento (microsd_events, smart_vbr, high_quality)."""
+    if request.method == 'POST':
+        data = request.get_json(force=True, silent=True) or {}
+        profile = data.get('profile', 'microsd_events').strip()
+        if profile not in ('microsd_events', 'smart_vbr', 'high_quality'):
+            return jsonify({'success': False, 'error': 'Perfil inválido'}), 400
+
+        save_setting('storage_profile', profile)
+        
+        settings = get_all_settings()
+        sc = settings.get('cameras', {})
+        for cid, cam in cameras.items():
+            rec = cam.get('recorder')
+            if profile == 'microsd_events':
+                # Modo MicroSD: Desactivar continuo 24/7 para ahorro masivo, clips de eventos H.264
+                cam['continuous_recording'] = False
+                if cid in sc: sc[cid]['continuous_recording'] = False
+                if rec:
+                    rec.set_continuous(False)
+                    rec.update_encoding_profile(crf=28, preset='veryfast', fps=15.0, max_bitrate_kbps=1000)
+            elif profile == 'smart_vbr':
+                # Modo Continuo Inteligente: Grabar 24/7 a bitrate controlado (CRF 28, 12 FPS, 800k max)
+                cam['continuous_recording'] = True
+                if cid in sc: sc[cid]['continuous_recording'] = True
+                if rec:
+                    rec.set_continuous(True)
+                    rec.update_encoding_profile(crf=28, preset='veryfast', fps=12.0, max_bitrate_kbps=800)
+            elif profile == 'high_quality':
+                # Modo Alta Calidad Full HD
+                cam['continuous_recording'] = True
+                if cid in sc: sc[cid]['continuous_recording'] = True
+                if rec:
+                    rec.set_continuous(True)
+                    rec.update_encoding_profile(crf=24, preset='veryfast', fps=15.0, max_bitrate_kbps=2000)
+        
+        save_setting('cameras', sc)
+        logger.info(f"💾 Perfil de almacenamiento cambiado a: {profile}")
+        return jsonify({
+            'success': True,
+            'storage_profile': profile,
+            'message': f"Perfil '{profile}' aplicado a todas las cámaras"
+        })
+    else:
+        settings = get_all_settings()
+        return jsonify({
+            'storage_profile': settings.get('storage_profile', 'microsd_events'),
+            'profiles': {
+                'microsd_events': {
+                    'name': '⭐ Modo MicroSD (Solo Eventos e IA)',
+                    'desc': 'Graba clips con pre-buffer solo cuando hay personas o movimiento. Ahorro del 98% (~1 GB/día total).',
+                    'burn_rate': '~1 GB/día total',
+                    'continuous': False
+                },
+                'smart_vbr': {
+                    'name': 'Modo Continuo Inteligente (Smart VBR)',
+                    'desc': 'Grabación continua 24/7 a 12 FPS y bitrate optimizado (~8-12 GB/día total).',
+                    'burn_rate': '~8-12 GB/día total',
+                    'continuous': True
+                },
+                'high_quality': {
+                    'name': 'Modo Continuo Full HD (Máxima Calidad)',
+                    'desc': 'Grabación continua 24/7 a 15 FPS nativo y máxima nitidez (~30-50 GB/día total).',
+                    'burn_rate': '~30-50 GB/día total',
+                    'continuous': True
+                }
+            }
+        })
+
+@app.route('/api/storage/purge', methods=['POST'])
+def purge_storage_route():
+    """Purga grabaciones acumuladas para liberar espacio de emergencia en disco."""
+    data = request.get_json(force=True, silent=True) or {}
+    target = data.get('target', 'continuous')  # 'continuous', 'clips', 'older_days', 'all'
+    days = data.get('days', 7)
+    
+    base_dir = get_storage_dir()
+    freed_bytes = 0
+    deleted_files = 0
+    
+    try:
+        from datetime import timedelta
+        if target == 'continuous':
+            for p in list(base_dir.rglob('continuous/*')):
+                if p.is_file():
+                    sz = p.stat().st_size
+                    p.unlink()
+                    freed_bytes += sz
+                    deleted_files += 1
+                elif p.is_dir() and not any(p.iterdir()):
+                    try: p.rmdir()
+                    except Exception: pass
+        elif target == 'all':
+            for sub in ['continuous', 'clips']:
+                for p in list(base_dir.rglob(f"{sub}/*")):
+                    if p.is_file():
+                        sz = p.stat().st_size
+                        p.unlink()
+                        freed_bytes += sz
+                        deleted_files += 1
+        elif target == 'older_days':
+            threshold_date = datetime.now() - timedelta(days=int(days))
+            for p in list(base_dir.rglob('*.mp4')):
+                if p.is_file():
+                    mtime = datetime.fromtimestamp(p.stat().st_mtime)
+                    if mtime < threshold_date:
+                        sz = p.stat().st_size
+                        p.unlink()
+                        freed_bytes += sz
+                        deleted_files += 1
+
+        freed_gb = round(freed_bytes / (1024**3), 2)
+        freed_mb = round(freed_bytes / (1024**2), 1)
+        logger.info(f"🧹 Purga completada: {deleted_files} archivos eliminados ({freed_gb} GB liberados)")
+        return jsonify({
+            'success': True,
+            'deleted_files': deleted_files,
+            'freed_mb': freed_mb,
+            'freed_gb': freed_gb,
+            'message': f"Se liberaron {freed_gb} GB ({deleted_files} archivos eliminados)"
+        })
+    except Exception as e:
+        logger.error(f"Error purgando grabaciones: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/ptz/move', methods=['POST'])
 def ptz_move():
@@ -1568,9 +2067,7 @@ def take_snapshot(camera_id):
 
 @app.route('/api/storage')
 def storage_info():
-    if cameras['cam1']['recorder']:
-        return jsonify(cameras['cam1']['recorder'].get_storage_info())
-    return jsonify({'error': 'No disponible'}), 500
+    return jsonify(get_combined_storage_info())
 
 @app.route('/api/sensitivity', methods=['POST'])
 def set_sensitivity():
@@ -2202,15 +2699,15 @@ if __name__ == '__main__':
     init_components()
     port = int(os.getenv('WEB_PORT', 5001))
     lan_ip = get_lan_ip()
-    storage = cameras['cam1']['recorder'].get_storage_info() if cameras['cam1']['recorder'] else {}
+    storage = get_combined_storage_info()
     
     print("\n" + "=" * 65)
     print("🚀 SISTEMA DE SEGURIDAD MULTI-CÁMARA IA INICIADO")
     print(f"📡 Acceso Local (Esta Mac):  http://localhost:{port}")
     print(f"📱 Acceso Móvil / Red LAN:   http://{lan_ip}:{port}")
-    print(f"📹 Cámara 1 (Tuya PTZ):      {cameras['cam1']['rtsp_url']}")
-    print(f"📹 Cámara 2 (iCam365):       {cameras['cam2']['rtsp_url']}")
-    print(f"💾 Grabación Dual en:        {get_storage_dir()}")
+    for cid, c in cameras.items():
+        print(f"📹 {c.get('name', cid)}: {c.get('rtsp_url', 'N/A')}")
+    print(f"💾 Directorio de Almacenamiento: {get_storage_dir()}")
     print("=" * 65 + "\n")
     
     app.run(host='0.0.0.0', port=port, threaded=True)

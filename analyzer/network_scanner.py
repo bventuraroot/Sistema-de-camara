@@ -13,88 +13,158 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 # Puertos comúnmente utilizados por cámaras de seguridad IP y NVRs
-CAMERA_PORTS = [554, 80, 8080, 8899, 34567, 5000, 8554, 8000, 3702]
+CAMERA_PORTS = [554, 80, 8080, 8899, 34567, 5000, 8554, 8000, 8800, 2020, 5054, 3702]
 
 # Plantillas y perfiles de conexión para diferentes fabricantes
 CAMERA_PRESETS = [
     {
+        'id': 'v380',
+        'name': 'V380 / V380 Pro / Macro-video',
+        'brand': 'V380',
+        'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
+        'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
+        'alt_template_1': 'rtsp://{user}:{pass}@{ip}:554/0',
+        'alt_template_2': 'rtsp://{user}:{pass}@{ip}:554/onvif1',
+        'onvif_port': 8899,
+        'default_user': 'admin',
+        'default_pass': '',
+        'instructions': (
+            "1. En la app móvil V380 Pro, abre la cámara > Ajustes del Dispositivo > "
+            "Seguridad de Red / Contraseña para configurar tu clave.\n"
+            "2. El usuario predeterminado es 'admin' y la contraseña es la que asignaste en la app.\n"
+            "3. En modelos modernos, el stream HD usa '/live/ch0' o '/0'. "
+            "Si no conecta, prueba puerto ONVIF 8899 o activa 'Monitoreo LAN' en la app."
+        ),
+        'notes': 'Cámaras populares V380/V380 Pro. Soportan RTSP en puerto 554 y ONVIF en 8899 u 80.'
+    },
+    {
+        'id': 'sehmua',
+        'name': 'Sehmua / Ubox (PTZ / Exterior / Solar)',
+        'brand': 'Sehmua',
+        'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
+        'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
+        'alt_template_1': 'rtsp://{user}:{pass}@{ip}:554/stream0',
+        'alt_template_2': 'rtsp://{user}:{pass}@{ip}:554/h264Preview_01_main',
+        'onvif_port': 80,
+        'default_user': 'admin',
+        'default_pass': 'admin',
+        'instructions': (
+            "1. Modelos Wi-Fi cableados a corriente: Tienen servidor RTSP activo en puerto 554 con usuario admin/admin.\n"
+            "2. ATENCIÓN MODELOS SOLARES CON BATERÍA (App Ubox): Las cámaras solares entran en reposo "
+            "para no agotar la batería. Para usarlas en el software continuo deben mantenerse conectadas permanentemente "
+            "a corriente USB o activar el modo 'Siempre Activa' en su app."
+        ),
+        'notes': 'Cámaras Sehmua Wi-Fi/4MP y domos PTZ. Protocolo ONVIF en puerto 80/8899 y RTSP en 554.'
+    },
+    {
+        'id': 'tapo',
+        'name': 'TP-Link Tapo (C200 / C310 / C500 / TC70)',
+        'brand': 'Tapo',
+        'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/stream1',
+        'substream_template': 'rtsp://{user}:{pass}@{ip}:554/stream2',
+        'onvif_port': 2020,
+        'default_user': 'admin',
+        'default_pass': '',
+        'instructions': (
+            "En la App Tapo: Ajustes de la cámara > Ajustes Avanzados > Cuenta de Cámara.\n"
+            "Crea un nombre de usuario y contraseña específicos para RTSP/ONVIF."
+        ),
+        'notes': 'Cámaras TP-Link Tapo. Requiere crear cuenta de cámara en la app Tapo.'
+    },
+    {
         'id': 'icam365',
         'name': 'iCam365 / EyePlus / Ginatex',
+        'brand': 'iCam365',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
         'onvif_port': 80,
         'default_user': 'admin',
         'default_pass': 'admin',
+        'instructions': 'Cámara Wi-Fi exterior/interior iCam365. Protocolo ONVIF Profile S nativo (Puerto 80). Usuario y clave admin/admin.',
         'notes': 'Cámara Wi-Fi exterior/interior iCam365. Protocolo ONVIF Profile S nativo (Puerto 80).'
     },
     {
         'id': 'xm_icsee',
         'name': 'Xiongmai / iCSee / XM (Cámara China común)',
+        'brand': 'iCSee',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/stream0',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/stream1',
         'onvif_port': 8899,
         'default_user': 'admin',
         'default_pass': '',
+        'instructions': 'Usada en cámaras iCSee / XMeye. Puerto ONVIF típico: 8899. Clave por defecto en blanco o configurada en app.',
         'notes': 'Usada en millones de cámaras chinas (iCSee / XMeye). Puerto ONVIF típico: 8899.'
     },
     {
         'id': 'yoosee',
         'name': 'Yoosee / CooCam / GOSCAM',
+        'brand': 'Yoosee',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/onvif1',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/onvif2',
         'onvif_port': 5000,
         'default_user': 'admin',
         'default_pass': '123456',
+        'instructions': 'Cámaras de bombillo y domo Yoosee. En la app Yoosee se debe habilitar RTSP y fijar clave numérica.',
         'notes': 'Cámaras de bombillo y domo Yoosee. En la app Yoosee se debe habilitar RTSP y fijar clave.'
     },
     {
         'id': 'camhi',
         'name': 'CamHi / HiSilicon',
+        'brand': 'CamHi',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/11',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/12',
         'onvif_port': 8080,
         'default_user': 'admin',
         'default_pass': 'admin',
+        'instructions': 'Chipsets HiSilicon comunes en cámaras metálicas domo/bala. Stream HD en /11 y substream en /12.',
         'notes': 'Chipsets HiSilicon comunes en cámaras metálicas domo/bala.'
     },
     {
         'id': 'tuya_bridge',
         'name': 'Tuya / Smart Life (vía RTSP Bridge)',
+        'brand': 'Tuya',
         'rtsp_template': 'rtsp://localhost:8554/{stream_name}/hd',
         'substream_template': 'rtsp://localhost:8554/{stream_name}/sd',
         'onvif_port': 8787,
         'default_user': '',
         'default_pass': '',
+        'instructions': 'Cámaras Tuya / Smart Life que requieren puente local tuya-rtsp-bridge (:8554).',
         'notes': 'Cámaras Tuya que requieren contenedor tuya-rtsp-bridge (:8554).'
     },
     {
         'id': 'dahua',
         'name': 'Dahua / Imou / Lorex',
+        'brand': 'Dahua',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel=1&subtype=0',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel=1&subtype=1',
         'onvif_port': 80,
         'default_user': 'admin',
         'default_pass': 'admin123',
+        'instructions': 'Cámaras Dahua e Imou. Para Imou, la contraseña es el código de seguridad (Safety Code) impreso en la etiqueta.',
         'notes': 'Cámaras y NVR Dahua/Imou estándar.'
     },
     {
         'id': 'hikvision',
         'name': 'Hikvision / Hilook / Ezviz',
+        'brand': 'Hikvision',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/Streaming/Channels/101',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/Streaming/Channels/102',
         'onvif_port': 80,
         'default_user': 'admin',
         'default_pass': '12345',
+        'instructions': 'Cámaras Hikvision / Ezviz. En Ezviz, la clave es el Verification Code impreso en la base de la cámara.',
         'notes': 'Cámaras y grabadores Hikvision/Ezviz con RTSP habilitado.'
     },
     {
         'id': 'generic_onvif',
         'name': 'Genérica ONVIF / RTSP',
+        'brand': 'Generic',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
         'onvif_port': 80,
         'default_user': 'admin',
         'default_pass': 'admin',
+        'instructions': 'Cualquier cámara compatible con ONVIF Profile S o flujo RTSP estándar H.264/H.265.',
         'notes': 'Cualquier cámara compatible con ONVIF Profile S.'
     }
 ]
@@ -310,7 +380,7 @@ def scan_network_cameras(custom_subnet=None):
     def probe_host(ip):
         open_ports = []
         best_lat = 999.0
-        for port in [554, 8899, 80, 8080, 34567, 5000, 8554]:
+        for port in [554, 8899, 80, 8080, 34567, 5000, 8554, 8800, 2020, 5054]:
             is_open, lat = _check_port(ip, port, timeout=0.22)
             if is_open:
                 open_ports.append(port)
@@ -321,14 +391,23 @@ def scan_network_cameras(custom_subnet=None):
             return None
 
         # Para considerar que es una cámara CCTV real:
-        # Debe tener puerto 554 (RTSP), 8899 (XM/iCSee), 34567 (NetIP) o (5000 Y 554)
-        is_camera = (554 in open_ports or 8899 in open_ports or 34567 in open_ports or (5000 in open_ports and 554 in open_ports) or 8554 in open_ports)
+        is_camera = (554 in open_ports or 8899 in open_ports or 34567 in open_ports or 
+                     (5000 in open_ports and 554 in open_ports) or 8554 in open_ports or
+                     8800 in open_ports or 2020 in open_ports or 5054 in open_ports)
         if not is_camera:
             return None
 
         # Deducir fabricante / hardware
-        if 8899 in open_ports or 34567 in open_ports:
-            hardware = "Xiongmai / iCSee / XMeye"
+        if 8800 in open_ports or 5054 in open_ports:
+            hardware = "V380 / Macro-video"
+            onvif_p = 8899 if 8899 in open_ports else 80
+            suggested_rtsp = f"rtsp://admin:@{ip}:554/live/ch0"
+        elif 2020 in open_ports:
+            hardware = "TP-Link Tapo"
+            onvif_p = 2020
+            suggested_rtsp = f"rtsp://admin:@{ip}:554/stream1"
+        elif 8899 in open_ports or 34567 in open_ports:
+            hardware = "Xiongmai / iCSee / V380 ONVIF"
             onvif_p = 8899
             suggested_rtsp = f"rtsp://admin:@{ip}:554/stream0"
         elif 5000 in open_ports and 554 in open_ports:
@@ -340,7 +419,7 @@ def scan_network_cameras(custom_subnet=None):
             onvif_p = 8787
             suggested_rtsp = f"rtsp://localhost:8554/Cámara_de_nubes/hd"
         else:
-            hardware = "iCam365 / Genérica ONVIF"
+            hardware = "Sehmua / iCam365 / Genérica ONVIF"
             onvif_p = 80 if 80 in open_ports else (8080 if 8080 in open_ports else 554)
             suggested_rtsp = f"rtsp://admin:admin@{ip}:554/live/ch0"
 
@@ -389,34 +468,70 @@ def build_suggested_urls(ip: str, hardware: str = "") -> list:
     """Genera una lista de URLs RTSP sugeridas listas para probar según la IP."""
     urls = [
         {
+            'label': 'V380 / V380 Pro (Canal HD /live/ch0)',
+            'url': f"rtsp://admin:@{ip}:554/live/ch0",
+            'substream': f"rtsp://admin:@{ip}:554/live/ch1",
+            'brand': 'V380'
+        },
+        {
+            'label': 'V380 Alternativo (/0)',
+            'url': f"rtsp://admin:@{ip}:554/0",
+            'substream': f"rtsp://admin:@{ip}:554/1",
+            'brand': 'V380'
+        },
+        {
+            'label': 'Sehmua / Ubox (PTZ HD)',
+            'url': f"rtsp://admin:admin@{ip}:554/live/ch0",
+            'substream': f"rtsp://admin:admin@{ip}:554/live/ch1",
+            'brand': 'Sehmua'
+        },
+        {
+            'label': 'Sehmua Alternativo (/stream0)',
+            'url': f"rtsp://admin:admin@{ip}:554/stream0",
+            'substream': f"rtsp://admin:admin@{ip}:554/stream1",
+            'brand': 'Sehmua'
+        },
+        {
+            'label': 'TP-Link Tapo (Canal 1)',
+            'url': f"rtsp://admin:@{ip}:554/stream1",
+            'substream': f"rtsp://admin:@{ip}:554/stream2",
+            'brand': 'Tapo'
+        },
+        {
             'label': 'iCam365 / EyePlus (HD)',
             'url': f"rtsp://admin:admin@{ip}:554/live/ch0",
-            'substream': f"rtsp://admin:admin@{ip}:554/live/ch1"
+            'substream': f"rtsp://admin:admin@{ip}:554/live/ch1",
+            'brand': 'iCam365'
         },
         {
             'label': 'Xiongmai / iCSee (XMeye)',
             'url': f"rtsp://admin:@{ip}:554/stream0",
-            'substream': f"rtsp://admin:@{ip}:554/stream1"
+            'substream': f"rtsp://admin:@{ip}:554/stream1",
+            'brand': 'iCSee'
         },
         {
             'label': 'Yoosee / CooCam (Clave: 123456)',
             'url': f"rtsp://admin:123456@{ip}:554/onvif1",
-            'substream': f"rtsp://admin:123456@{ip}:554/onvif2"
+            'substream': f"rtsp://admin:123456@{ip}:554/onvif2",
+            'brand': 'Yoosee'
         },
         {
             'label': 'CamHi / HiSilicon (11)',
             'url': f"rtsp://admin:admin@{ip}:554/11",
-            'substream': f"rtsp://admin:admin@{ip}:554/12"
+            'substream': f"rtsp://admin:admin@{ip}:554/12",
+            'brand': 'CamHi'
         },
         {
             'label': 'Dahua / Imou (Canal 1)',
             'url': f"rtsp://admin:admin123@{ip}:554/cam/realmonitor?channel=1&subtype=0",
-            'substream': f"rtsp://admin:admin123@{ip}:554/cam/realmonitor?channel=1&subtype=1"
+            'substream': f"rtsp://admin:admin123@{ip}:554/cam/realmonitor?channel=1&subtype=1",
+            'brand': 'Dahua'
         },
         {
             'label': 'Hikvision / Hilook (Canal 101)',
             'url': f"rtsp://admin:12345@{ip}:554/Streaming/Channels/101",
-            'substream': f"rtsp://admin:12345@{ip}:554/Streaming/Channels/102"
+            'substream': f"rtsp://admin:12345@{ip}:554/Streaming/Channels/102",
+            'brand': 'Hikvision'
         }
     ]
     return urls

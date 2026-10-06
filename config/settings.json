@@ -7,6 +7,7 @@
   "object_detection": false,
   "continuous_recording": false,
   "auto_tracking": true,
+  "storage_profile": "microsd_events",
   "cameras": {
     "cam1": {
       "id": "cam1",
@@ -14,10 +15,10 @@
       "rtsp_url": "rtsp://localhost:8554/C%C3%A1mara_de_nubes/hd",
       "fallback_url": null,
       "ptz": true,
-      "motion_detection": false,
+      "motion_detection": true,
       "event_recording": true,
       "auto_tracking": true,
-      "continuous_recording": true,
+      "continuous_recording": false,
       "ai_filter": false,
       "motion_threshold": 4500,
       "home_return_delay": 15.0
@@ -28,10 +29,10 @@
       "rtsp_url": "rtsp://admin:admin@192.168.1.18:554/live/ch0",
       "fallback_url": "rtsp://admin:admin@192.168.1.18:554/0/av1",
       "ptz": true,
-      "motion_detection": false,
+      "motion_detection": true,
       "event_recording": true,
       "auto_tracking": true,
-      "continuous_recording": true,
+      "continuous_recording": false,
       "ai_filter": false,
       "motion_threshold": 4500,
       "home_return_delay": 15.0
@@ -61,5 +62,8 @@
   "cam2_ptz_user": "admin",
   "system_profile": "auto",
   "max_recording_days": 15,
-  "auto_purge_enabled": true
+  "auto_purge_enabled": true,
+  "max_storage_gb": 100.0,
+  "auto_recycle_enabled": true,
+  "recycle_target_ratio": 0.90
 }

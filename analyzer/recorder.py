@@ -52,7 +52,7 @@ class FFmpegWriter:
     Genera archivos MP4 perfectamente comprimidos (-crf 26, -preset ultrafast, -tune zerolatency, yuv420p, +faststart)
     reduciendo drásticamente el consumo de CPU (<25% en 1080p) y de disco en más de un 98%.
     """
-    def __init__(self, filepath, width, height, fps=15.0, crf=26, preset='ultrafast'):
+    def __init__(self, filepath, width, height, fps=15.0, crf=28, preset='veryfast', max_bitrate_kbps=1200):
         self.filepath = str(filepath)
         self.width = width
         self.height = height
@@ -73,10 +73,14 @@ class FFmpegWriter:
             "-preset", preset,
             "-tune", "zerolatency",
             "-crf", str(crf),
+        ]
+        if max_bitrate_kbps and max_bitrate_kbps > 0:
+            cmd.extend(["-maxrate", f"{max_bitrate_kbps}k", "-bufsize", f"{max_bitrate_kbps * 2}k"])
+        cmd.extend([
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             self.filepath
-        ]
+        ])
         try:
             self.proc = subprocess.Popen(
                 cmd,
@@ -129,7 +133,7 @@ class FFmpegWriter:
 
 
 class Recorder:
-    def __init__(self, output_dir=None, rtsp_url='rtsp://localhost:8554/Cámara_de_nubes/hd', max_days=30, segment_minutes=5, continuous=False, has_audio=True):
+    def __init__(self, output_dir=None, rtsp_url='rtsp://localhost:8554/Cámara_de_nubes/hd', max_days=30, segment_minutes=5, continuous=False, has_audio=True, crf=28, preset='veryfast', fps=15.0, max_bitrate_kbps=1200, max_storage_gb=100.0, auto_recycle=True, recycle_target_ratio=0.90):
         if output_dir:
             self.output_dir = Path(output_dir)
         else:
@@ -158,12 +162,27 @@ class Recorder:
         self.segment_seconds = segment_minutes * 60
         self.continuous_enabled = continuous
         
+        # Parámetros de cuota máxima de almacenamiento y auto-reciclaje en anillo (Ring Buffer FIFO)
+        self.max_storage_gb = float(max_storage_gb)
+        self.auto_recycle_enabled = bool(auto_recycle)
+        self.recycle_target_ratio = float(recycle_target_ratio)
+        self._storage_size_cache = {'bytes': 0, 'time': 0}
+        self._storage_cache_ttl = 30  # segundos de TTL para no saturar I/O de disco
+
+        # Parámetros de compresión y eficiencia de almacenamiento
+        self.crf = crf
+        self.preset = preset
+        self.fps = fps
+        self.max_bitrate_kbps = max_bitrate_kbps
+        self.codec_name = 'h264'
+        
         # Buffer circular en memoria para capturar los 2 segundos PREVIOS a la detección
         self.pre_buffer = deque(maxlen=30)
         self.pre_buffer_lock = threading.Lock()
         
-        # Grabación Continua 24/7 en memoria (sin conexiones RTSP concurrentes ni colisiones)
-        self.continuous_queue = Queue(maxsize=100)
+        # Grabación Continua 24/7 en memoria: cola acotada a 30 frames (~2s a 15fps)
+        # Esto reduce drásticamente el consumo de memoria RAM de ~600MB a <180MB por cámara
+        self.continuous_queue = Queue(maxsize=30)
         self.continuous_writer = None
         self.continuous_writer_start = 0
         self.continuous_writer_lock = threading.Lock()
@@ -172,18 +191,197 @@ class Recorder:
         if self.continuous_enabled:
             self._start_continuous_writer()
         
-        # Grabación de Clips de Video por Evento (Movimiento / IA)
-        self.clip_queue = Queue(maxsize=200)
+        # Grabación de Clips de Video por Evento: cola optimizada a 45 frames (evita fuga de RAM)
+        self.clip_queue = Queue(maxsize=45)
         self.active_clip = None
         self.clip_lock = threading.Lock()
-        self.fps = 15.0
-        self.codec_name = 'h264'
         self._start_clip_writer()
         
         self._start_cleanup_thread()
-        mode_str = "24/7 Continuo" if self.continuous_enabled else "🎯 Modo Solo Eventos (Ahorro de recursos)"
+        mode_str = "24/7 Continuo" if self.continuous_enabled else "🎯 Modo Solo Eventos (Ahorro MicroSD)"
         audio_str = "Micrófono ACTIVO" if self.has_audio else "Sin audio RTSP"
-        logger.info(f"Grabador iniciado en: {self.output_dir} ({mode_str} | {audio_str})")
+        recycle_str = f"Cuota: {self.max_storage_gb} GB (FIFO Activo)" if self.auto_recycle_enabled else "Sin límite de cuota"
+        logger.info(f"Grabador iniciado en: {self.output_dir} ({mode_str} | {audio_str} | {recycle_str} | CRF={self.crf} | preset={self.preset} | maxrate={self.max_bitrate_kbps}k)")
+
+    def update_encoding_profile(self, crf=None, preset=None, fps=None, max_bitrate_kbps=None):
+        """Actualiza dinámicamente los parámetros de compresión H.264."""
+        if crf is not None: self.crf = int(crf)
+        if preset is not None: self.preset = str(preset)
+        if fps is not None: self.fps = float(fps)
+        if max_bitrate_kbps is not None: self.max_bitrate_kbps = int(max_bitrate_kbps)
+        logger.info(f"Perfil de codificación actualizado para {self.output_dir}: CRF={self.crf}, preset={self.preset}, fps={self.fps}, maxrate={self.max_bitrate_kbps}k")
+
+    def set_storage_quota(self, max_storage_gb: float, auto_recycle: bool = True, recycle_target_ratio: float = 0.90):
+        """Actualiza dinámicamente el límite de cuota en GB y la política de auto-reciclaje FIFO."""
+        self.max_storage_gb = max(1.0, float(max_storage_gb))
+        self.auto_recycle_enabled = bool(auto_recycle)
+        self.recycle_target_ratio = min(0.98, max(0.50, float(recycle_target_ratio)))
+        logger.info(f"Cuota de almacenamiento actualizada: {self.max_storage_gb} GB (Auto-reciclaje: {self.auto_recycle_enabled}, Ratio: {self.recycle_target_ratio}) [{self.output_dir}]")
+        # Si la cuota se reduce por debajo del tamaño actual, activar reciclaje inmediatamente
+        if self.auto_recycle_enabled:
+            threading.Thread(target=self._check_and_recycle_if_needed, daemon=True, name="quota-check").start()
+
+    def get_recordings_size_bytes(self, force: bool = False) -> int:
+        """Calcula el tamaño real ocupado por las grabaciones (con caché para evitar sobrecarga de I/O de disco)."""
+        now = time.time()
+        if not force and self._storage_size_cache['time'] > 0 and (now - self._storage_size_cache['time'] < self._storage_cache_ttl):
+            return self._storage_size_cache['bytes']
+        
+        total_bytes = 0
+        try:
+            if self.output_dir.exists():
+                for entry in self.output_dir.rglob('*'):
+                    if entry.is_file():
+                        try:
+                            total_bytes += entry.stat().st_size
+                        except (OSError, FileNotFoundError):
+                            pass
+            self._storage_size_cache = {'bytes': total_bytes, 'time': now}
+        except Exception as e:
+            logger.error(f"Error calculando tamaño de grabaciones en {self.output_dir}: {e}")
+        return total_bytes
+
+    def _check_and_recycle_if_needed(self):
+        """Comprueba si el tamaño actual excede la cuota y dispara el auto-reciclaje si aplica."""
+        if not self.auto_recycle_enabled or self.max_storage_gb <= 0:
+            return
+        try:
+            cur_bytes = self.get_recordings_size_bytes(force=True)
+            max_bytes = int(self.max_storage_gb * (1024**3))
+            if cur_bytes >= max_bytes:
+                self.auto_recycle_fifo()
+        except Exception as e:
+            logger.error(f"Error en _check_and_recycle_if_needed: {e}")
+
+    def auto_recycle_fifo(self, target_bytes=None) -> dict:
+        """
+        Recicla automáticamente espacio de grabación en anillo (FIFO) cuando se supera la cuota configurada (ej. 100 GB).
+        Elimina primero los segmentos continuos 24/7 más antiguos, luego los clips de eventos más antiguos.
+        Preserva clips recientes y snapshots prioritarios.
+        """
+        current_bytes = self.get_recordings_size_bytes(force=True)
+        max_bytes = int(self.max_storage_gb * (1024**3))
+        
+        if target_bytes is None:
+            target_bytes = int(max_bytes * self.recycle_target_ratio)
+            
+        if current_bytes <= target_bytes:
+            return {
+                'recycled_files': 0,
+                'freed_bytes': 0,
+                'freed_gb': 0.0,
+                'current_recordings_gb': round(current_bytes / (1024**3), 2),
+                'max_storage_gb': self.max_storage_gb,
+                'status': 'ok_within_quota'
+            }
+            
+        bytes_to_free = current_bytes - target_bytes
+        cur_gb = round(current_bytes / (1024**3), 2)
+        target_gb = round(target_bytes / (1024**3), 2)
+        needed_gb = round(bytes_to_free / (1024**3), 2)
+        logger.info(f"♻️ [Auto-Reciclaje FIFO] Cuota excedida ({cur_gb} GB / {self.max_storage_gb} GB). Liberando ~{needed_gb} GB (objetivo: {target_gb} GB) en {self.output_dir}...")
+        
+        deleted_files = 0
+        freed_bytes = 0
+        
+        # 1. Fase 1: Segmentos continuos 24/7 antiguos (prioridad número 1 de reciclaje)
+        continuous_files = []
+        if self.continuous_dir.exists():
+            for f in self.continuous_dir.rglob('*.mp4'):
+                if f.is_file():
+                    try:
+                        continuous_files.append((f.stat().st_mtime, f.stat().st_size, f))
+                    except (OSError, FileNotFoundError):
+                        pass
+        # Ordenar por fecha de modificación ascendente (los archivos más antiguos primero)
+        continuous_files.sort(key=lambda x: x[0])
+        
+        for _, sz, fpath in continuous_files:
+            if freed_bytes >= bytes_to_free:
+                break
+            try:
+                parent = fpath.parent
+                fpath.unlink(missing_ok=True)
+                freed_bytes += sz
+                deleted_files += 1
+                # Limpiar carpeta de fecha si quedó vacía
+                if parent != self.continuous_dir and not any(parent.iterdir()):
+                    try:
+                        parent.rmdir()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"No se pudo eliminar {fpath} durante reciclaje continuo: {e}")
+                
+        # 2. Fase 2: Clips de eventos antiguos (si aún no se ha alcanzado la cuota objetivo)
+        if freed_bytes < bytes_to_free and self.clips_dir.exists():
+            clip_files = []
+            for f in self.clips_dir.rglob('*.mp4'):
+                if f.is_file():
+                    try:
+                        clip_files.append((f.stat().st_mtime, f.stat().st_size, f))
+                    except (OSError, FileNotFoundError):
+                        pass
+            clip_files.sort(key=lambda x: x[0])
+            for _, sz, fpath in clip_files:
+                if freed_bytes >= bytes_to_free:
+                    break
+                try:
+                    parent = fpath.parent
+                    fpath.unlink(missing_ok=True)
+                    # Eliminar también archivos de audio o temporales asociados
+                    for sidecar in parent.glob(f"{fpath.stem}*"):
+                        if sidecar.is_file() and sidecar != fpath:
+                            try:
+                                sidecar.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                    freed_bytes += sz
+                    deleted_files += 1
+                    if parent != self.clips_dir and not any(parent.iterdir()):
+                        try:
+                            parent.rmdir()
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"No se pudo eliminar clip {fpath} en reciclaje: {e}")
+
+        # 3. Fase 3: Snapshots antiguos (último recurso)
+        if freed_bytes < bytes_to_free and self.snapshots_dir.exists():
+            snap_files = []
+            for f in self.snapshots_dir.glob('*.jpg'):
+                if f.is_file():
+                    try:
+                        snap_files.append((f.stat().st_mtime, f.stat().st_size, f))
+                    except (OSError, FileNotFoundError):
+                        pass
+            snap_files.sort(key=lambda x: x[0])
+            for _, sz, fpath in snap_files:
+                if freed_bytes >= bytes_to_free:
+                    break
+                try:
+                    fpath.unlink(missing_ok=True)
+                    freed_bytes += sz
+                    deleted_files += 1
+                except Exception:
+                    pass
+
+        # Forzar actualización inmediata del caché de tamaño
+        self.get_recordings_size_bytes(force=True)
+        import gc
+        gc.collect()
+        
+        freed_gb = round(freed_bytes / (1024**3), 2)
+        cur_after_gb = round(self._storage_size_cache['bytes'] / (1024**3), 2)
+        logger.info(f"✅ [Auto-Reciclaje FIFO Completado] {deleted_files} archivos eliminados ({freed_gb} GB liberados). Espacio actual: {cur_after_gb} GB / {self.max_storage_gb} GB.")
+        return {
+            'recycled_files': deleted_files,
+            'freed_bytes': freed_bytes,
+            'freed_gb': freed_gb,
+            'current_recordings_gb': cur_after_gb,
+            'max_storage_gb': self.max_storage_gb,
+            'status': 'recycled'
+        }
     
     # ----------------- GRABACIÓN CONTINUA 24/7 (EN MEMORIA) -----------------
     def _start_continuous_writer(self):
@@ -230,6 +428,13 @@ class Recorder:
 
     def _rotate_continuous_segment(self, width, height):
         self._close_continuous_writer()
+        
+        # Salvaguarda proactiva de cuota: si estamos cerca del límite de disco (>=98%), reciclar antes de abrir nuevo archivo
+        if self.auto_recycle_enabled and self.max_storage_gb > 0:
+            cur_bytes = self.get_recordings_size_bytes()
+            if cur_bytes >= int(self.max_storage_gb * 0.98 * (1024**3)):
+                self.auto_recycle_fifo()
+
         today_str = datetime.now().strftime('%Y-%m-%d')
         day_dir = self.continuous_dir / today_str
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -244,11 +449,12 @@ class Recorder:
                 width,
                 height,
                 fps=self.fps,
-                crf=26,
-                preset='ultrafast'
+                crf=self.crf,
+                preset=self.preset,
+                max_bitrate_kbps=self.max_bitrate_kbps
             )
             self.continuous_writer_start = time.time()
-            logger.info(f"📹 Nuevo segmento continuo H.264 optimizado: {filename} ({width}x{height} @ {self.fps}fps)")
+            logger.info(f"📹 Nuevo segmento continuo H.264 optimizado: {filename} ({width}x{height} @ {self.fps}fps | CRF={self.crf} | {self.preset})")
         except Exception as e:
             logger.error(f"No se pudo inicializar grabador para segmento continuo: {e}")
             self.continuous_writer = None
@@ -261,6 +467,11 @@ class Recorder:
             except Exception as e:
                 logger.error(f"Error cerrando continuous_writer: {e}")
             self.continuous_writer = None
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
 
     # ----------------- CLIPS DE VIDEO POR EVENTO (DETECCIÓN INTELIGENTE) -----------------
     def trigger_event_clip(self, label='evento'):
@@ -367,8 +578,9 @@ class Recorder:
                                 w,
                                 h,
                                 fps=self.fps,
-                                crf=26,
-                                preset='ultrafast'
+                                crf=self.crf,
+                                preset=self.preset,
+                                max_bitrate_kbps=self.max_bitrate_kbps
                             )
                         writer = self.active_clip['writer']
                     
@@ -527,12 +739,25 @@ class Recorder:
             free_gb = round(free / (1024**3), 1)
             percent = int((used / total) * 100) if total > 0 else 0
             
+            # Tamaño real ocupado por las grabaciones y estado de la cuota (Ring Buffer)
+            rec_bytes = self.get_recordings_size_bytes()
+            rec_gb = round(rec_bytes / (1024**3), 2)
+            quota_max = float(self.max_storage_gb)
+            quota_pct = int((rec_gb / quota_max) * 100) if quota_max > 0 else 0
+            quota_free_gb = max(0.0, round(quota_max - rec_gb, 2))
+            
             return {
                 'path': str(self.output_dir),
                 'total_gb': total_gb,
                 'used_gb': used_gb,
                 'free_gb': free_gb,
                 'percent_used': percent,
+                'recordings_used_gb': rec_gb,
+                'recordings_used_bytes': rec_bytes,
+                'max_storage_gb': quota_max,
+                'quota_percent': min(100, quota_pct),
+                'quota_free_gb': quota_free_gb,
+                'auto_recycle_enabled': self.auto_recycle_enabled,
                 'continuous_active': self.continuous_enabled,
                 'mode': '24/7 Continuo' if self.continuous_enabled else 'Solo Eventos',
                 'segment_minutes': self.segment_seconds // 60
@@ -542,6 +767,9 @@ class Recorder:
             return {
                 'path': str(self.output_dir),
                 'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'percent_used': 0,
+                'recordings_used_gb': 0.0, 'max_storage_gb': float(self.max_storage_gb),
+                'quota_percent': 0, 'quota_free_gb': float(self.max_storage_gb),
+                'auto_recycle_enabled': self.auto_recycle_enabled,
                 'continuous_active': self.continuous_enabled,
                 'mode': 'Solo Eventos',
                 'segment_minutes': self.segment_seconds // 60
@@ -566,45 +794,42 @@ class Recorder:
                     self._run_cleanup_cycle()
                 except Exception as e:
                     logger.error(f"Error en ciclo de limpieza: {e}")
-                time.sleep(900)  # Chequear cada 15 minutos en lugar de cada hora
-        t = threading.Thread(target=cleanup_worker, daemon=True)
+                time.sleep(300)  # Chequear cada 5 minutos (respuesta rápida ante cuotas llenas)
+        t = threading.Thread(target=cleanup_worker, daemon=True, name="storage-cleanup")
         t.start()
     
     def _run_cleanup_cycle(self):
-        """Ejecuta el ciclo de retención programado y chequeo de espacio crítico."""
-        try:
-            res = self.purge_older_than(self.max_days, target_type='all', dry_run=False)
-            if res.get('deleted_count', 0) > 0:
-                logger.info(f"Auto-limpieza ({self.max_days} días): {res['deleted_count']} archivos eliminados ({res['freed_mb']} MB) en {self.output_dir}")
-        except Exception as e:
-            logger.error(f"Error en auto-limpieza por retención ({self.max_days} días): {e}")
+        """Ejecuta el ciclo de auto-reciclaje por cuota (Ring Buffer FIFO), retención por días y chequeo de disco físico."""
+        # 1. Auto-reciclaje FIFO por cuota asignada (ej. 100 GB)
+        if self.auto_recycle_enabled and self.max_storage_gb > 0:
+            try:
+                rec_bytes = self.get_recordings_size_bytes(force=True)
+                max_bytes = int(self.max_storage_gb * (1024**3))
+                if rec_bytes >= max_bytes:
+                    self.auto_recycle_fifo()
+            except Exception as e:
+                logger.error(f"Error en auto_recycle_fifo durante ciclo: {e}")
+
+        # 2. Purga programada por días de retención (si está habilitada)
+        if self.max_days and self.max_days > 0:
+            try:
+                res = self.purge_older_than(self.max_days, target_type='all', dry_run=False)
+                if res.get('deleted_count', 0) > 0:
+                    logger.info(f"Auto-limpieza ({self.max_days} días): {res['deleted_count']} archivos eliminados ({res['freed_mb']} MB) en {self.output_dir}")
+            except Exception as e:
+                logger.error(f"Error en auto-limpieza por retención ({self.max_days} días): {e}")
         
+        # 3. Salvaguarda de espacio libre físico en disco: mantener al menos 15 GB o 5% del disco
         try:
             total, _, free = shutil.disk_usage(str(self.output_dir))
             free_gb = free / (1024**3)
-            # Salvaguarda de espacio libre: mantener al menos 15 GB o 5% del disco
             min_safe_free_gb = max(15.0, (total / (1024**3)) * 0.05) if total > 0 else 15.0
 
             if free_gb < min_safe_free_gb:
-                logger.warning(f"Espacio libre crítico ({free_gb:.1f} GB < {min_safe_free_gb:.1f} GB requeridos). Purgando grabaciones más antiguas...")
-                all_date_dirs = []
-                for base in [self.continuous_dir, self.clips_dir]:
-                    if base.exists():
-                        for d in base.glob('*'):
-                            if d.is_dir():
-                                parsed = self._parse_dir_date(d.name)
-                                if parsed:
-                                    all_date_dirs.append((parsed, d))
-                if all_date_dirs:
-                    all_date_dirs.sort(key=lambda x: x[0])
-                    for oldest_date, oldest_dir in all_date_dirs:
-                        logger.info(f"Purgando día más antiguo por espacio crítico: {oldest_dir}")
-                        shutil.rmtree(oldest_dir, ignore_errors=True)
-                        _, _, cur_free = shutil.disk_usage(str(self.output_dir))
-                        if (cur_free / (1024**3)) >= min_safe_free_gb:
-                            break
+                logger.warning(f"Espacio libre físico crítico ({free_gb:.1f} GB < {min_safe_free_gb:.1f} GB requeridos). Purgando grabaciones continuas más antiguas...")
+                self.auto_recycle_fifo(target_bytes=int(self.get_recordings_size_bytes(force=True) * 0.8))
         except Exception as e:
-            logger.error(f"Error en verificación de espacio: {e}")
+            logger.error(f"Error en verificación de espacio físico: {e}")
     
     def list_snapshots(self, limit=30):
         snapshots = []
