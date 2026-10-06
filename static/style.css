@@ -511,27 +511,57 @@ body {
     text-decoration: none;
 }
 
-/* ----------------- CONTENEDOR MOSAICO DUAL ----------------- */
+/* ----------------- CONTENEDOR MOSAICO MULTI-CÁMARA DINÁMICO ----------------- */
 .mosaic-container {
     width: 100%;
     display: grid;
     transition: all 0.3s ease;
-}
-
-.mosaic-container.mode-mosaic {
-    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 0.75rem;
     padding: 0.75rem;
     background: rgba(5, 8, 15, 0.95);
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 
-.mosaic-container.mode-cam1 #cameraBoxCam2 {
-    display: none !important;
+.mosaic-container.grid-1 {
+    grid-template-columns: 1fr;
+}
+.mosaic-container.grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.mosaic-container.grid-3,
+.mosaic-container.grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.mosaic-container.grid-5,
+.mosaic-container.grid-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.mosaic-container.grid-more {
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
 }
 
-.mosaic-container.mode-cam2 #cameraBoxCam1 {
+@media (max-width: 900px) {
+    .mosaic-container,
+    .mosaic-container.grid-2,
+    .mosaic-container.grid-3,
+    .mosaic-container.grid-4,
+    .mosaic-container.grid-5,
+    .mosaic-container.grid-6 {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+.mosaic-container.mode-single .mosaic-camera-box {
     display: none !important;
 }
+.mosaic-container.mode-single .mosaic-camera-box.active-single-cam {
+    display: flex !important;
+    grid-column: 1 / -1;
+}
+
+/* Retrocompatibilidad selectores legacy */
+.mosaic-container.mode-cam1 #cameraBoxCam2 { display: none !important; }
+.mosaic-container.mode-cam2 #cameraBoxCam1 { display: none !important; }
 
 .mosaic-camera-box {
     background: #000;

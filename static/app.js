@@ -142,29 +142,182 @@ function updateGlobalQualityDropdown() {
     }
 }
 
+// Registro global y dinámico de cámaras activas
+const knownCamerasMap = {};
+const prevOnlineMap = {};
+
 let canvasLoopRunning = false;
-let canvasFid = { cam1: 0, cam2: 0 };
-let canvasFetching = { cam1: false, cam2: false };
-let canvasFps = { cam1: 0, cam2: 0 };
-let canvasFrameCount = { cam1: 0, cam2: 0 };
-let canvasLastFpsTime = { cam1: performance.now(), cam2: performance.now() };
+const canvasFid = {};
+const canvasFetching = {};
+const canvasFps = {};
+const canvasFrameCount = {};
+const canvasLastFpsTime = {};
+
+// Helper universal para acceder a elementos DOM de cualquier cámara (cam1, cam2, cam3, etc.)
+function getCamDom(cid) {
+    const u = cid.charAt(0).toUpperCase() + cid.slice(1);
+    return {
+        box: document.getElementById(`cameraBox_${cid}`) || document.getElementById(`cameraBox${u}`),
+        img: document.getElementById(`videoFeed_${cid}`) || document.getElementById(`videoFeed${u}`),
+        canvas: document.getElementById(`canvasFeed_${cid}`) || document.getElementById(`canvasFeed${u}`),
+        dot: document.getElementById(`camDot_${cid}`) || document.getElementById(`${cid}StatusDot`),
+        res: document.getElementById(`camRes_${cid}`) || document.getElementById(`${cid}ResBadge`),
+        fps: document.getElementById(`camFps_${cid}`) || document.getElementById(`${cid}FpsBadge`),
+        name: document.getElementById(`camName_${cid}`) || document.querySelector(`#cameraBox${u} .cam-name`),
+        recText: document.getElementById(`recModeText_${cid}`) || document.getElementById(`recModeText${u}`),
+        reloadBtn: document.getElementById(`reloadBtn_${cid}`) || document.getElementById(`reload${u}Btn`),
+        qSelect: document.getElementById(`qualitySelect_${cid}`) || document.getElementById(`qualitySelect${u}`)
+    };
+}
+
+// Sincroniza dinámicamente las tarjetas de video en el mosaico principal
+function syncMosaicCameraBoxes(cams) {
+    if (!mosaicContainer) return;
+
+    cams.forEach(cam => {
+        knownCamerasMap[cam.id] = cam;
+    });
+
+    const activeIds = new Set(cams.map(c => c.id));
+
+    cams.forEach(cam => {
+        const cid = cam.id;
+        const dom = getCamDom(cid);
+
+        if (!dom.box) {
+            // Generar tarjeta interactiva para cámaras adicionales (cam3, cam4, etc.)
+            const box = document.createElement('div');
+            box.className = 'mosaic-camera-box';
+            box.id = `cameraBox_${cid}`;
+
+            const resText = (cam.resolution && cam.resolution.width) ? `${cam.resolution.width}x${cam.resolution.height}` : 'HD';
+            const fpsText = `${cam.stream_fps || 0} fps`;
+            const recLabel = cam.continuous_recording ? 'REC 24/7' : 'EVENTOS';
+
+            box.innerHTML = `
+                <div class="mosaic-camera-header">
+                    <div class="cam-title-info">
+                        <span class="cam-dot ${cam.online ? 'connected' : ''}" id="camDot_${cid}"></span>
+                        <span class="cam-name" id="camName_${cid}">${cam.name}</span>
+                        <span class="badge badge-sm" id="camRes_${cid}">${resText}</span>
+                        <span class="cam-fps" id="camFps_${cid}">${fpsText}</span>
+                    </div>
+                    <div class="cam-header-actions">
+                        <div class="cam-quality-control" title="Resolución en vivo para ${cam.name}">
+                            <span class="cam-q-label">En vivo:</span>
+                            <select class="cam-quality-select" id="qualitySelect_${cid}" data-cam="${cid}" aria-label="Resolución en vivo ${cam.name}">
+                                <option value="360p">360p</option>
+                                <option value="480p" selected>480p</option>
+                                <option value="720p">720p</option>
+                                <option value="1080p">1080p</option>
+                            </select>
+                        </div>
+                        <button type="button" class="btn-expand-cam" id="btnExpand_${cid}" data-cam="${cid}" title="Ver esta cámara en pantalla completa">
+                            ⛶ Full
+                        </button>
+                    </div>
+                </div>
+                <div class="video-wrapper">
+                    <canvas id="canvasFeed_${cid}" width="960" height="540" style="display: none; width: 100%; height: 100%; object-fit: contain;"></canvas>
+                    <img id="videoFeed_${cid}" src="${BLANK_FRAME}" alt="${cam.name}" loading="eager">
+                    <div class="video-overlay" id="overlay_${cid}">
+                        <div class="alert-banner" id="motionAlert_${cid}" style="display: none;">
+                            <span class="alert-icon">⚠️</span>
+                            <span>Movimiento</span>
+                        </div>
+                        <div class="alert-banner ai-alert" id="aiAlert_${cid}" style="display: none;">
+                            <span class="alert-icon">🎯</span>
+                            <span id="aiAlertMsg_${cid}">Persona Detectada</span>
+                        </div>
+                    </div>
+                    <div class="rec-badge" id="recBadge_${cid}">
+                        <span class="rec-dot"></span> <span id="recModeText_${cid}">${recLabel}</span>
+                    </div>
+                    <button type="button" class="feed-reload-btn" id="reloadBtn_${cid}" style="display: none;">
+                        🔄 Reconectar
+                    </button>
+                </div>
+            `;
+
+            mosaicContainer.appendChild(box);
+
+            const newDom = getCamDom(cid);
+            if (newDom.qSelect) {
+                newDom.qSelect.value = getCameraQuality(cid);
+                newDom.qSelect.addEventListener('change', () => {
+                    setCameraQuality(cid, newDom.qSelect.value);
+                });
+            }
+
+            const expandBtn = box.querySelector('.btn-expand-cam');
+            if (expandBtn) {
+                expandBtn.addEventListener('click', () => setViewMode(cid));
+            }
+
+            if (newDom.img) {
+                newDom.img.addEventListener('error', () => {
+                    if (!newDom.img.src || newDom.img.src.startsWith('data:') || isAppPageHidden) return;
+                    if (newDom.reloadBtn) newDom.reloadBtn.style.display = 'inline-flex';
+                });
+                newDom.img.addEventListener('load', () => {
+                    if (newDom.reloadBtn) newDom.reloadBtn.style.display = 'none';
+                });
+                newDom.img.addEventListener('click', () => refreshCameraFeed(cid, true));
+            }
+
+            if (newDom.reloadBtn) {
+                newDom.reloadBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    refreshCameraFeed(cid, true);
+                });
+            }
+        } else {
+            if (dom.name) dom.name.textContent = cam.name;
+        }
+    });
+
+    // Limpiar cajas que hayan sido eliminadas
+    const allBoxes = mosaicContainer.querySelectorAll('.mosaic-camera-box');
+    allBoxes.forEach(box => {
+        let boxCid = null;
+        if (box.id.startsWith('cameraBox_')) {
+            boxCid = box.id.replace('cameraBox_', '');
+        } else if (box.id === 'cameraBoxCam1') {
+            boxCid = 'cam1';
+        } else if (box.id === 'cameraBoxCam2') {
+            boxCid = 'cam2';
+        }
+        if (boxCid && !activeIds.has(boxCid)) {
+            box.remove();
+            delete knownCamerasMap[boxCid];
+        }
+    });
+
+    // Ajustar columnas de la cuadrícula
+    mosaicContainer.classList.remove('grid-1', 'grid-2', 'grid-3', 'grid-4', 'grid-5', 'grid-6', 'grid-more');
+    const total = cams.length;
+    if (total <= 1) mosaicContainer.classList.add('grid-1');
+    else if (total === 2) mosaicContainer.classList.add('grid-2');
+    else if (total <= 4) mosaicContainer.classList.add('grid-4');
+    else if (total <= 6) mosaicContainer.classList.add('grid-6');
+    else mosaicContainer.classList.add('grid-more');
+}
 
 async function fetchCanvasFrame(cid) {
     if (!canvasLoopRunning || playerEngine !== 'canvas') return;
     if (canvasFetching[cid]) return;
 
-    if (isMobileDevice) {
-        if (currentViewMode === 'cam1' && cid !== 'cam1') return;
-        if (currentViewMode === 'cam2' && cid !== 'cam2') return;
-    }
+    if (currentViewMode !== 'mosaic' && currentViewMode !== cid) return;
 
-    const canvasEl = cid === 'cam1' ? canvasFeedCam1 : canvasFeedCam2;
-    const ctx = cid === 'cam1' ? ctxCam1 : ctxCam2;
-    if (!canvasEl || !ctx) return;
+    const dom = getCamDom(cid);
+    const canvasEl = dom.canvas;
+    if (!canvasEl) return;
+    const ctx = canvasEl.getContext('2d', { alpha: false });
+    if (!ctx) return;
 
     canvasFetching[cid] = true;
     const abortCtrl = new AbortController();
-    const timeoutId = setTimeout(() => abortCtrl.abort(), 1200);
+    const timeoutId = setTimeout(() => abortCtrl.abort(), 1400);
 
     try {
         const lastFid = canvasFid[cid] || 0;
@@ -220,15 +373,16 @@ async function fetchCanvasFrame(cid) {
                     });
                 }
 
-                // Cálculo de FPS reales en el cliente
+                // Cálculo de FPS cliente
                 const now = performance.now();
+                if (!canvasFrameCount[cid]) canvasFrameCount[cid] = 0;
+                if (!canvasLastFpsTime[cid]) canvasLastFpsTime[cid] = now;
                 canvasFrameCount[cid]++;
                 if (now - canvasLastFpsTime[cid] >= 1000) {
                     canvasFps[cid] = ((canvasFrameCount[cid] * 1000) / (now - canvasLastFpsTime[cid])).toFixed(1);
                     canvasFrameCount[cid] = 0;
                     canvasLastFpsTime[cid] = now;
-                    const badge = cid === 'cam1' ? cam1FpsBadge : cam2FpsBadge;
-                    if (badge) badge.textContent = `${canvasFps[cid]} fps`;
+                    if (dom.fps) dom.fps.textContent = `${canvasFps[cid]} fps`;
                 }
 
                 canvasFetching[cid] = false;
@@ -251,16 +405,32 @@ async function fetchCanvasFrame(cid) {
     }, 40);
 }
 
+function getAllCameraIds() {
+    const ids = Object.keys(knownCamerasMap);
+    if (ids.length > 0) return ids;
+    const fromDom = [];
+    document.querySelectorAll('.mosaic-camera-box').forEach(b => {
+        if (b.id.startsWith('cameraBox_')) fromDom.push(b.id.replace('cameraBox_', ''));
+        else if (b.id === 'cameraBoxCam1') fromDom.push('cam1');
+        else if (b.id === 'cameraBoxCam2') fromDom.push('cam2');
+    });
+    return fromDom.length > 0 ? fromDom : ['cam1', 'cam2'];
+}
+
 function startCanvasLoops() {
     canvasLoopRunning = true;
-    requestAnimationFrame(() => fetchCanvasFrame('cam1'));
-    requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+    getAllCameraIds().forEach(cid => {
+        if (currentViewMode === 'mosaic' || currentViewMode === cid) {
+            requestAnimationFrame(() => fetchCanvasFrame(cid));
+        }
+    });
 }
 
 function stopCanvasLoops() {
     canvasLoopRunning = false;
-    canvasFetching.cam1 = false;
-    canvasFetching.cam2 = false;
+    getAllCameraIds().forEach(cid => {
+        canvasFetching[cid] = false;
+    });
 }
 
 function updateEngineUI() {
@@ -271,14 +441,16 @@ function updateEngineUI() {
         if (engineModeText) engineModeText.textContent = isCanvas ? 'Cero Lag (GPU)' : 'Flujo Directo';
     }
 
-    if (canvasFeedCam1) canvasFeedCam1.style.display = isCanvas ? 'block' : 'none';
-    if (canvasFeedCam2) canvasFeedCam2.style.display = isCanvas ? 'block' : 'none';
-    if (videoFeedCam1) videoFeedCam1.style.display = isCanvas ? 'none' : 'block';
-    if (videoFeedCam2) videoFeedCam2.style.display = isCanvas ? 'none' : 'block';
+    getAllCameraIds().forEach(cid => {
+        const dom = getCamDom(cid);
+        if (dom.canvas) dom.canvas.style.display = isCanvas ? 'block' : 'none';
+        if (dom.img) dom.img.style.display = isCanvas ? 'none' : 'block';
+        if (isCanvas && dom.img) {
+            dom.img.src = BLANK_FRAME;
+        }
+    });
 
     if (isCanvas) {
-        if (videoFeedCam1) videoFeedCam1.src = BLANK_FRAME;
-        if (videoFeedCam2) videoFeedCam2.src = BLANK_FRAME;
         startCanvasLoops();
     } else {
         stopCanvasLoops();
@@ -307,58 +479,45 @@ function refreshCameraFeed(cid, force = false) {
         }
         return;
     }
-    const imgEl = cid === 'cam1' ? videoFeedCam1 : videoFeedCam2;
-    if (imgEl && (force || !imgEl.src || imgEl.src === BLANK_FRAME || !imgEl.src.includes(`/video_feed/${cid}`))) {
-        imgEl.src = getFeedUrl(cid);
+    const dom = getCamDom(cid);
+    if (dom.img && (force || !dom.img.src || dom.img.src === BLANK_FRAME || !dom.img.src.includes(`/video_feed/${cid}`))) {
+        dom.img.src = getFeedUrl(cid);
     }
-    const reloadBtn = cid === 'cam1' ? reloadCam1Btn : reloadCam2Btn;
-    if (reloadBtn) reloadBtn.style.display = 'none';
+    if (dom.reloadBtn) dom.reloadBtn.style.display = 'none';
 }
 
 function refreshActiveFeeds(force = false) {
+    const allCids = getAllCameraIds();
+
     if (playerEngine === 'canvas') {
         if (canvasLoopRunning) {
-            canvasFetching.cam1 = false;
-            canvasFetching.cam2 = false;
-            requestAnimationFrame(() => fetchCanvasFrame('cam1'));
-            requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+            allCids.forEach(cid => {
+                canvasFetching[cid] = false;
+                if (currentViewMode === 'mosaic' || currentViewMode === cid) {
+                    requestAnimationFrame(() => fetchCanvasFrame(cid));
+                }
+            });
         }
         return;
     }
 
-    if (isMobileDevice) {
-        if (currentViewMode === 'cam2') {
-            if (videoFeedCam2 && (!videoFeedCam2.src || !videoFeedCam2.src.includes('/video_feed/cam2') || force)) {
-                videoFeedCam2.src = getFeedUrl('cam2');
-            }
-            if (videoFeedCam1 && videoFeedCam1.src !== BLANK_FRAME) {
-                videoFeedCam1.src = BLANK_FRAME;
-            }
-        } else if (currentViewMode === 'cam1') {
-            if (videoFeedCam1 && (!videoFeedCam1.src || !videoFeedCam1.src.includes('/video_feed/cam1') || force)) {
-                videoFeedCam1.src = getFeedUrl('cam1');
-            }
-            if (videoFeedCam2 && videoFeedCam2.src !== BLANK_FRAME) {
-                videoFeedCam2.src = BLANK_FRAME;
+    allCids.forEach(cid => {
+        const dom = getCamDom(cid);
+        if (!dom.img) return;
+
+        const isVisible = (currentViewMode === 'mosaic' || currentViewMode === cid);
+        if (isVisible) {
+            const feedUrl = getFeedUrl(cid);
+            if (force || !dom.img.src || dom.img.src === BLANK_FRAME || !dom.img.src.includes(`/video_feed/${cid}`)) {
+                dom.img.src = feedUrl;
             }
         } else {
-            if (videoFeedCam1 && (!videoFeedCam1.src || !videoFeedCam1.src.includes('/video_feed/cam1') || force)) {
-                videoFeedCam1.src = getFeedUrl('cam1');
-            }
-            if (videoFeedCam2 && (!videoFeedCam2.src || !videoFeedCam2.src.includes('/video_feed/cam2') || force)) {
-                videoFeedCam2.src = getFeedUrl('cam2');
+            if (dom.img.src !== BLANK_FRAME) {
+                dom.img.src = BLANK_FRAME;
             }
         }
-    } else {
-        if (videoFeedCam1 && (!videoFeedCam1.src || !videoFeedCam1.src.includes('/video_feed/cam1') || force)) {
-            videoFeedCam1.src = getFeedUrl('cam1');
-        }
-        if (videoFeedCam2 && (!videoFeedCam2.src || !videoFeedCam2.src.includes('/video_feed/cam2') || force)) {
-            videoFeedCam2.src = getFeedUrl('cam2');
-        }
-    }
-    if (reloadCam1Btn) reloadCam1Btn.style.display = 'none';
-    if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
+        if (dom.reloadBtn) dom.reloadBtn.style.display = 'none';
+    });
 }
 
 function initQualityControls() {
@@ -401,27 +560,21 @@ document.addEventListener('visibilitychange', () => {
         if (playerEngine === 'canvas') {
             canvasLoopRunning = false;
         } else {
-            if (videoFeedCam1 && videoFeedCam1.src && !videoFeedCam1.src.startsWith('data:')) {
-                videoFeedCam1.src = BLANK_FRAME;
-            }
-            if (videoFeedCam2 && videoFeedCam2.src && !videoFeedCam2.src.startsWith('data:')) {
-                videoFeedCam2.src = BLANK_FRAME;
-            }
+            getAllCameraIds().forEach(cid => {
+                const dom = getCamDom(cid);
+                if (dom.img && dom.img.src && !dom.img.src.startsWith('data:')) {
+                    dom.img.src = BLANK_FRAME;
+                }
+            });
         }
     } else if (document.visibilityState === 'visible') {
         isAppPageHidden = false;
         const now = Date.now();
         if (now - lastVisibilityResumeTime > 1500) {
             lastVisibilityResumeTime = now;
-            lastCam1FrameTime = now;
-            lastCam2FrameTime = now;
             console.log('👁️ Pestaña activa: reanudando flujos de video en tiempo real...');
             if (playerEngine === 'canvas') {
-                canvasLoopRunning = true;
-                canvasFetching.cam1 = false;
-                canvasFetching.cam2 = false;
-                requestAnimationFrame(() => fetchCanvasFrame('cam1'));
-                requestAnimationFrame(() => fetchCanvasFrame('cam2'));
+                startCanvasLoops();
             } else {
                 refreshActiveFeeds(true);
             }
@@ -429,37 +582,39 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// Función para cambiar de vista (Mosaico Dual vs Individual)
+// Función para cambiar de vista (Mosaico Todas vs Individual para cualquier cámara)
 function setViewMode(mode) {
     currentViewMode = mode;
     if (tabMosaic) tabMosaic.classList.toggle('active', mode === 'mosaic');
-    if (tabCam1) tabCam1.classList.toggle('active', mode === 'cam1');
-    if (tabCam2) tabCam2.classList.toggle('active', mode === 'cam2');
+    document.querySelectorAll('.view-tab-btn[data-view]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === mode);
+    });
 
     if (mosaicContainer) {
-        mosaicContainer.className = `mosaic-container mode-${mode}`;
+        if (mode === 'mosaic') {
+            mosaicContainer.classList.remove('mode-single', 'mode-cam1', 'mode-cam2');
+            document.querySelectorAll('.mosaic-camera-box').forEach(box => {
+                box.style.display = 'flex';
+                box.classList.remove('active-single-cam');
+            });
+            if (activeViewTag) activeViewTag.textContent = 'Vista Mosaico Todas';
+        } else {
+            mosaicContainer.classList.add('mode-single');
+            const targetDom = getCamDom(mode);
+            document.querySelectorAll('.mosaic-camera-box').forEach(box => {
+                const isTarget = (targetDom.box && box === targetDom.box);
+                box.style.display = isTarget ? 'flex' : 'none';
+                box.classList.toggle('active-single-cam', isTarget);
+            });
+            const camName = knownCamerasMap[mode]?.name || (mode === 'cam1' ? 'Cámara 1: Tuya PTZ' : (mode === 'cam2' ? 'Cámara 2: iCam365' : mode.toUpperCase()));
+            if (activeViewTag) activeViewTag.textContent = `${camName} (Full)`;
+        }
     }
 
-    if (activeViewTag) {
-        if (mode === 'mosaic') activeViewTag.textContent = 'Vista Mosaico Dual';
-        else if (mode === 'cam1') activeViewTag.textContent = 'Cámara 1: Tuya PTZ (Full)';
-        else if (mode === 'cam2') activeViewTag.textContent = 'Cámara 2: iCam365 (Full)';
-    }
-
-    // En móvil, sincronizar feed activo para máxima fluidez y cero lag
-    if (isMobileDevice) {
-        refreshActiveFeeds();
-    }
-    if (playerEngine === 'canvas') {
-        canvasFetching.cam1 = false;
-        canvasFetching.cam2 = false;
-        requestAnimationFrame(() => fetchCanvasFrame('cam1'));
-        requestAnimationFrame(() => fetchCanvasFrame('cam2'));
-    }
+    refreshActiveFeeds(true);
 
     // Ocultar botones de reconectar para que no queden visibles
-    if (reloadCam1Btn) reloadCam1Btn.style.display = 'none';
-    if (reloadCam2Btn) reloadCam2Btn.style.display = 'none';
+    document.querySelectorAll('.feed-reload-btn').forEach(btn => btn.style.display = 'none');
 
     // Sincronizar objetivo PTZ con la vista activa
     const ptzControlBar = document.getElementById('ptzControlBar');
@@ -472,8 +627,7 @@ function setViewMode(mode) {
         else if (mode === 'cam1') setPtzTargetCamera('cam1');
     }
     if (typeof window.setPerCamConfigTab === 'function') {
-        if (mode === 'cam2') window.setPerCamConfigTab('cam2');
-        else if (mode === 'cam1') window.setPerCamConfigTab('cam1');
+        if (mode !== 'mosaic') window.setPerCamConfigTab(mode);
     }
     if (typeof syncToolbarWithActiveCamera === 'function') {
         syncToolbarWithActiveCamera();
@@ -1796,46 +1950,25 @@ async function pollStatus() {
             statusTextEl.textContent = anyOnline ? 'En Vivo' : 'Reconectando';
         }
 
-        // Supervisión individual de cámaras
+        // Supervisión universal de todas las cámaras activas (cam1, cam2, cam3, etc.)
         if (status.cameras) {
-            // Cámara 1 (Tuya)
-            if (status.cameras.cam1) {
-                const c1 = status.cameras.cam1;
-                if (cam1StatusDot) cam1StatusDot.className = c1.online ? 'cam-dot connected' : 'cam-dot';
-                if (cam1FpsBadge) cam1FpsBadge.textContent = `${c1.stream_fps || 0} fps`;
-                if (cam1ResBadge && c1.resolution?.width) {
-                    cam1ResBadge.textContent = `${c1.resolution.width}x${c1.resolution.height}`;
+            for (const [cid, c] of Object.entries(status.cameras)) {
+                knownCamerasMap[cid] = Object.assign(knownCamerasMap[cid] || {}, c);
+                const dom = getCamDom(cid);
+                if (dom.dot) dom.dot.className = c.online ? 'cam-dot connected' : 'cam-dot';
+                if (dom.fps) dom.fps.textContent = `${c.stream_fps || 0} fps`;
+                if (dom.res && c.resolution?.width) {
+                    dom.res.textContent = `${c.resolution.width}x${c.resolution.height}`;
                 }
-                const recText1 = document.getElementById('recModeTextCam1');
-                if (recText1) {
-                    recText1.textContent = c1.continuous_recording ? 'REC 24/7' : 'EVENTOS';
+                if (dom.recText) {
+                    dom.recText.textContent = c.continuous_recording ? 'REC 24/7' : 'EVENTOS';
                 }
-                // Si la cámara estaba caída y acaba de reconectarse en el backend, refrescar feed
-                if (c1.online && prevOnlineCam1 === false) {
-                    console.log('✅ Cámara 1 recuperada en el servidor, reconectando feed visual...');
-                    reloadCam1();
+                // Si la cámara estaba caída y acaba de reconectarse en el backend, refrescar feed visual
+                if (c.online && prevOnlineMap[cid] === false) {
+                    console.log(`✅ Cámara ${cid} (${c.name}) recuperada en el servidor, refrescando feed...`);
+                    refreshCameraFeed(cid, true);
                 }
-                prevOnlineCam1 = c1.online;
-            }
-
-            // Cámara 2 (iCam365)
-            if (status.cameras.cam2) {
-                const c2 = status.cameras.cam2;
-                if (cam2StatusDot) cam2StatusDot.className = c2.online ? 'cam-dot connected' : 'cam-dot';
-                if (cam2FpsBadge) cam2FpsBadge.textContent = `${c2.stream_fps || 0} fps`;
-                if (cam2ResBadge && c2.resolution?.width) {
-                    cam2ResBadge.textContent = `${c2.resolution.width}x${c2.resolution.height}`;
-                }
-                const recText2 = document.getElementById('recModeTextCam2');
-                if (recText2) {
-                    recText2.textContent = c2.continuous_recording ? 'REC 24/7' : 'EVENTOS';
-                }
-                // Si la cámara estaba caída y acaba de reconectarse en el backend, refrescar feed
-                if (c2.online && prevOnlineCam2 === false) {
-                    console.log('✅ Cámara 2 recuperada en el servidor, reconectando feed visual...');
-                    reloadCam2();
-                }
-                prevOnlineCam2 = c2.online;
+                prevOnlineMap[cid] = c.online;
             }
 
             if (window.updatePerCameraCache) {
@@ -1845,7 +1978,9 @@ async function pollStatus() {
 
         // Resolución en header según vista activa
         if (status.cameras) {
-            const activeCam = currentViewMode === 'cam2' ? status.cameras.cam2 : status.cameras.cam1;
+            const activeCam = (currentViewMode !== 'mosaic' && status.cameras[currentViewMode]) 
+                ? status.cameras[currentViewMode] 
+                : (status.cameras.cam1 || status.cameras.cam2 || Object.values(status.cameras)[0]);
             if (activeCam && activeCam.resolution?.width) {
                 const w = activeCam.resolution.width;
                 const h = activeCam.resolution.height;
@@ -2812,7 +2947,6 @@ function initStorageOptimizationModal() {
 // ----------------- SINCRONIZACIÓN DINÁMICA DE PESTAÑAS DE VISTA PARA N CÁMARAS -----------------
 async function refreshDynamicCameraTabs() {
     const dynamicGroup = document.getElementById('dynamicCamTabsGroup');
-    if (!dynamicGroup) return;
 
     try {
         const res = await fetch('/api/cameras');
@@ -2820,28 +2954,29 @@ async function refreshDynamicCameraTabs() {
         const data = await res.json();
         const cams = data.cameras || [];
 
-        dynamicGroup.innerHTML = '';
-        cams.forEach(cam => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = `view-tab-btn ${currentViewMode === cam.id ? 'active' : ''}`;
-            btn.id = `tab_${cam.id}`;
-            btn.dataset.view = cam.id;
-            btn.innerHTML = `<span class="icon">📹</span> ${cam.name}`;
+        // 1. Sincronizar tarjetas interactivas de video en el contenedor Mosaico
+        syncMosaicCameraBoxes(cams);
 
-            btn.addEventListener('click', () => {
-                setViewMode(cam.id);
+        // 2. Sincronizar botones de pestañas superiores para cambio de vista
+        if (dynamicGroup) {
+            dynamicGroup.innerHTML = '';
+            cams.forEach(cam => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = `view-tab-btn ${currentViewMode === cam.id ? 'active' : ''}`;
+                btn.id = `tab_${cam.id}`;
+                btn.dataset.view = cam.id;
+                btn.innerHTML = `<span class="icon">📹</span> ${cam.name}`;
+
+                btn.addEventListener('click', () => {
+                    setViewMode(cam.id);
+                });
+                dynamicGroup.appendChild(btn);
             });
-            dynamicGroup.appendChild(btn);
-        });
-
-        if (mosaicContainer) {
-            mosaicContainer.classList.remove('grid-1', 'grid-2', 'grid-3', 'grid-4', 'grid-5', 'grid-6');
-            if (cams.length <= 1) mosaicContainer.classList.add('grid-1');
-            else if (cams.length === 2) mosaicContainer.classList.add('grid-2');
-            else if (cams.length <= 4) mosaicContainer.classList.add('grid-4');
-            else mosaicContainer.classList.add('grid-6');
         }
+
+        // 3. Alimentar feeds de video activos
+        refreshActiveFeeds();
     } catch (e) {
         console.error('Error refrescando pestañas dinámicas de cámaras:', e);
     }

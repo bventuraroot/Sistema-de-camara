@@ -338,7 +338,7 @@ def camera_ai_worker(cid):
             
             # 3. Auto-Tracking individual en Cámara 1 (Tuya) o Cámara 2 (iCam365 ONVIF)
             ALLOWED_TARGET_CLASSES = {'person', 'car', 'truck', 'bus', 'motorcycle'}
-            active_ptz = ptz_controller if cid == 'cam1' else icam_ptz
+            active_ptz = ptz_controller if cid == 'cam1' else (icam_ptz if cid == 'cam2' else None)
             cam_tracking_enabled = cam.get('auto_tracking', True) and (active_ptz and getattr(active_ptz, 'is_active', lambda: True)())
             
             if cam_tracking_enabled and active_ptz:

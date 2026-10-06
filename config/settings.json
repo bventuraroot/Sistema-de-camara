@@ -25,9 +25,9 @@
     },
     "cam2": {
       "id": "cam2",
-      "name": "C\u00e1mara 2 (192.168.1.18)",
-      "rtsp_url": "rtsp://admin:admin@192.168.1.18:554/live/ch0",
-      "fallback_url": "rtsp://admin:admin@192.168.1.18:554/0/av1",
+      "name": "C\u00e1mara 2 (iCam365)",
+      "rtsp_url": "rtsp://admin:admin@192.168.1.20:554/live/ch0",
+      "fallback_url": "rtsp://admin:admin@192.168.1.20:554/0/av1",
       "ptz": true,
       "motion_detection": true,
       "event_recording": true,
@@ -36,6 +36,21 @@
       "ai_filter": false,
       "motion_threshold": 4500,
       "home_return_delay": 15.0
+    },
+    "cam3": {
+      "id": "cam3",
+      "name": "C\u00e1mara Patio Prueba",
+      "rtsp_url": "rtsp://admin:admin@192.168.1.20:554/live/ch0",
+      "fallback_url": null,
+      "brand": "generic",
+      "ptz": false,
+      "continuous_recording": false,
+      "event_recording": true,
+      "motion_detection": true,
+      "ai_filter": true,
+      "auto_tracking": true,
+      "motion_threshold": 4000,
+      "home_return_delay": 5.0
     }
   },
   "motion_schedule": {
@@ -65,5 +80,5 @@
   "auto_purge_enabled": true,
   "max_storage_gb": 100.0,
   "auto_recycle_enabled": true,
-  "recycle_target_ratio": 0.90
+  "recycle_target_ratio": 0.9
 }
