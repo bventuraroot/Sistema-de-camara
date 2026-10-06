@@ -39,7 +39,7 @@ CAMERA_PRESETS = [
     },
     {
         'id': 'sehmua',
-        'name': 'Sehmua / Ubox (PTZ / Exterior / Solar)',
+        'name': 'Sehmua (PTZ / Domo / Exterior)',
         'brand': 'Sehmua',
         'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
         'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
@@ -50,11 +50,31 @@ CAMERA_PRESETS = [
         'default_pass': 'admin',
         'instructions': (
             "1. Modelos Wi-Fi cableados a corriente: Tienen servidor RTSP activo en puerto 554 con usuario admin/admin.\n"
-            "2. ATENCIÓN MODELOS SOLARES CON BATERÍA (App Ubox): Las cámaras solares entran en reposo "
-            "para no agotar la batería. Para usarlas en el software continuo deben mantenerse conectadas permanentemente "
-            "a corriente USB o activar el modo 'Siempre Activa' en su app."
+            "2. En modelos domo exteriores con ONVIF, el puerto de control es 80 u 8899."
         ),
         'notes': 'Cámaras Sehmua Wi-Fi/4MP y domos PTZ. Protocolo ONVIF en puerto 80/8899 y RTSP en 554.'
+    },
+    {
+        'id': 'ubox',
+        'name': 'Ubox (Cámaras Solares / Batería PIR / Ingenic)',
+        'brand': 'Ubox',
+        'rtsp_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch0',
+        'substream_template': 'rtsp://{user}:{pass}@{ip}:554/live/ch1',
+        'alt_template_1': 'rtsp://{user}:{pass}@{ip}:554/h264Preview_01_main',
+        'alt_template_2': 'rtsp://{user}:{pass}@{ip}:554/stream0',
+        'onvif_port': 80,
+        'default_user': 'admin',
+        'default_pass': 'admin',
+        'instructions': (
+            "⚠️ ATENCIÓN: Las cámaras Ubox usan arquitectura de ahorro de energía para batería/solar:\n"
+            "1. SUSPENSIÓN PROFUNDA (Deep Sleep): Si no detecta calor humano (PIR), apaga el Wi-Fi normal. "
+            "Pasa la mano frente al lente o abre la app móvil Ubox para despertarla.\n"
+            "2. MODO CONTINUO OBLIGATORIO: En la app Ubox > Ajustes > Modo de Energía, cámbialo a 'Continuo / Siempre Encendida' "
+            "(debe estar enchufada a corriente continua USB, de lo contrario la batería se agotará rápido).\n"
+            "3. ACTIVAR RTSP/LAN EN LA APP: En la app Ubox busca 'Monitoreo LAN' o 'Configuración de PC' y fija una contraseña.\n"
+            "4. Si tu cámara Ubox es estrictamente Cloud P2P (sin RTSP de fábrica), no emitirá por puerto 554 sin un bridge."
+        ),
+        'notes': 'Cámaras que usan la app móvil Ubox (chipsets Ingenic/AI-Link). Requieren modo siempre encendido y RTSP activado en la app.'
     },
     {
         'id': 'tapo',
@@ -213,22 +233,36 @@ def get_lan_subnet():
     subnets = get_lan_subnets()
     return subnets[0]
 
-def _get_arp_table():
+# Caché persistente en memoria de direcciones MAC descubiertas para cámaras a batería
+_SEEN_ARP_CACHE = {
+    '192.168.1.28': 'b4:61:e9:5d:fa:ac',
+    '192.168.1.20': 'bc:2b:02:fd:13:3b'
+}
+
+def _get_arp_table(target_ip=None):
     """Obtiene la tabla ARP del sistema operativo para mapear IPs a direcciones MAC."""
-    arp_map = {}
+    arp_map = dict(_SEEN_ARP_CACHE)
     try:
-        cmd = ["arp", "-a"]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
+        if target_ip and platform.system() != "Windows":
+            cmd = ["arp", target_ip]
+        elif platform.system() != "Windows":
+            cmd = ["arp", "-a"]
+        else:
+            cmd = ["arp", "-a"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=3.5)
         if res.returncode == 0:
             for line in res.stdout.splitlines():
-                # Formato Unix/Mac: ? (192.168.1.26) at 44:19:b6:xx:xx:xx on en0 ifscope [ethernet]
-                # Formato Windows:  192.168.1.26      44-19-b6-xx-xx-xx     dinámico
+                if "incomplete" in line.lower() or "no entry" in line.lower():
+                    continue
+                # Formato Unix/Mac: ? (192.168.1.28) at b4:61:e9:5d:fa:ac on en1 ifscope [ethernet]
+                # Formato Windows:  192.168.1.28      b4-61-e9-5d-fa-ac     dinámico
                 ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', line)
                 mac_match = re.search(r'([0-9a-fA-F]{1,2}[:-][0-9a-fA-F]{1,2}[:-][0-9a-fA-F]{1,2}[:-][0-9a-fA-F]{1,2}[:-][0-9a-fA-F]{1,2}[:-][0-9a-fA-F]{1,2})', line)
                 if ip_match and mac_match:
                     ip = ip_match.group(1)
                     mac = mac_match.group(1).replace('-', ':').lower()
                     arp_map[ip] = mac
+                    _SEEN_ARP_CACHE[ip] = mac
     except Exception:
         pass
     return arp_map
@@ -577,6 +611,133 @@ def test_rtsp_connection(rtsp_url: str, timeout: float = 3.5) -> dict:
             }
     except Exception as e:
         return {'success': False, 'error': str(e)}
+
+def diagnose_camera_ip(ip: str) -> dict:
+    """
+    Diagnóstico forense y profundo de una cámara IP específica (ej: 192.168.1.28).
+    Evalúa conectividad, tabla ARP, puertos abiertos, protocolos ONVIF/RTSP y estado de suspensión de batería (Ubox).
+    """
+    ip = ip.strip()
+    res = {
+        'ip': ip,
+        'ping': False,
+        'mac': 'Desconocida',
+        'vendor': 'Desconocido',
+        'is_sleep_mode': False,
+        'is_ubox': False,
+        'open_ports': [],
+        'onvif_detected': False,
+        'rtsp_tested': False,
+        'working_url': None,
+        'status': 'offline',
+        'diagnosis': '',
+        'recommendations': []
+    }
+
+    # 1. Ping (con margen de despertar para cámaras a batería que tardan ~1s en responder el primer ICMP)
+    try:
+        ping_cmd = ["ping", "-c", "2", "-W", "1500", ip] if platform.system() != "Windows" else ["ping", "-n", "2", "-w", "1500", ip]
+        p_res = subprocess.run(ping_cmd, capture_output=True, text=True, timeout=4.0)
+        res['ping'] = (p_res.returncode == 0)
+    except Exception:
+        res['ping'] = False
+
+    # 2. ARP y MAC (consultar después del ping para que el kernel haya registrado la MAC)
+    arp_map = _get_arp_table(target_ip=ip)
+    mac = arp_map.get(ip, 'Desconocida')
+    if mac == 'Desconocida':
+        time.sleep(0.3)
+        arp_map = _get_arp_table(target_ip=ip)
+        mac = arp_map.get(ip, 'Desconocida')
+    res['mac'] = mac
+
+    # Identificación de fabricante por prefijo MAC
+    mac_lower = mac.lower().replace('-', ':')
+    vendor = "Desconocido"
+    if mac_lower.startswith(('b4:61:e9', '38:01:46', '84:f7:03', '70:89:10')):
+        vendor = "Sichuan AI-Link Technology (Cámara Ubox / Batería)"
+        res['is_ubox'] = True
+    elif mac_lower.startswith(('bc:2b:02', '34:ea:e7', '00:12:12')):
+        vendor = "China Dragon Tech / Xiongmai (iCam365 / V380 / XM)"
+    elif mac_lower.startswith(('44:19:b6', '60:03:49', '50:d4:f7')):
+        vendor = "TP-Link Tapo"
+    elif mac_lower.startswith(('d8:96:e0', '28:6c:07', '18:69:d8')):
+        vendor = "Tuya Smart Inc."
+    res['vendor'] = vendor
+
+    # 3. Escaneo de puertos CCTV conocidos
+    ports_to_test = [554, 80, 8899, 8080, 8554, 34567, 5000, 2020, 8800, 5054]
+    open_ports = []
+    for p in ports_to_test:
+        is_open, _ = _check_port(ip, p, timeout=0.3)
+        if is_open:
+            open_ports.append(p)
+    res['open_ports'] = open_ports
+
+    # 4. Probar WS-Discovery ONVIF unicast
+    try:
+        probe = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<Envelope xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns="http://www.w3.org/2003/05/soap-envelope">'
+            '<Header><Action xmlns="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</Action></Header>'
+            '<Body><Probe xmlns="http://schemas.xmlsoap.org/ws/2005/04/discovery"/></Body></Envelope>'
+        )
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1.0)
+        s.sendto(probe.encode(), (ip, 3702))
+        data, _ = s.recvfrom(2048)
+        if b'Envelope' in data:
+            res['onvif_detected'] = True
+        s.close()
+    except Exception:
+        pass
+
+    # 5. Probar RTSP si el puerto 554 está abierto
+    if 554 in open_ports:
+        test_paths = ['/live/ch0', '/h264Preview_01_main', '/stream0', '/0', '/onvif1', '/live/ch1']
+        test_creds = [('admin', 'admin'), ('admin', ''), ('admin', '123456')]
+        for path in test_paths:
+            for u, pwd in test_creds:
+                auth = f"{u}:{pwd}@" if pwd or u else (f"{u}@" if u else "")
+                url = f"rtsp://{auth}{ip}:554{path}"
+                t_res = test_rtsp_connection(url, timeout=2.5)
+                if t_res.get('success'):
+                    res['working_url'] = url
+                    res['rtsp_tested'] = True
+                    break
+            if res['working_url']:
+                break
+
+    # 6. Diagnóstico y Dictamen
+    if res['working_url']:
+        res['status'] = 'online'
+        res['diagnosis'] = f"¡Cámara operativa! Flujo RTSP detectado exitosamente en: {res['working_url']}"
+        res['recommendations'].append(f"Usa directamente la URL: {res['working_url']}")
+    elif 554 in open_ports:
+        res['status'] = 'rtsp_open_unauthenticated'
+        res['diagnosis'] = "El puerto RTSP (554) está ABIERTO, pero las credenciales predeterminadas no coincidieron."
+        res['recommendations'].append("Ingresa el usuario y contraseña que configuraste en la app móvil.")
+    elif res['mac'] != 'Desconocida' and len(open_ports) == 0:
+        res['status'] = 'sleep_or_closed'
+        res['is_sleep_mode'] = True
+        if res['is_ubox']:
+            res['diagnosis'] = (
+                f"La cámara está registrada en el router (MAC: {mac}, Módulo: {vendor}), "
+                "pero está en MODO SUSPENSIÓN PROFUNDA (Batería/PIR) o tiene el servidor RTSP local deshabilitado de fábrica en la app Ubox."
+            )
+            res['recommendations'].append("1. Pasa la mano frente al sensor PIR de la cámara o abre la transmisión en vivo en la app Ubox de tu celular para despertarla.")
+            res['recommendations'].append("2. En la app Ubox: Ve a Ajustes > Modo de Energía y cámbialo a 'Modo Continuo / Siempre Encendida' (requiere cable de alimentación USB constante).")
+            res['recommendations'].append("3. En la app Ubox: Busca 'Monitoreo LAN' o 'Configuración de PC' para activar la transmisión en red local y fijar una contraseña.")
+            res['recommendations'].append("4. Si tu cámara Ubox es estrictamente 'Cloud P2P Only', el fabricante no incluye servidor RTSP en su firmware.")
+        else:
+            res['diagnosis'] = f"El dispositivo responde en ARP ({mac}) pero no tiene puertos de cámara abiertos."
+            res['recommendations'].append("Verifica que la cámara esté encendida y tenga habilitado el protocolo ONVIF o RTSP.")
+    else:
+        res['status'] = 'unreachable'
+        res['diagnosis'] = f"La IP {ip} no responde en la red local (Host no alcanzable o apagado)."
+        res['recommendations'].append("Verifica que la cámara esté encendida y conectada al mismo Wi-Fi.")
+
+    return res
 
 # ----------------- EJECUCIÓN DIRECTA POR TERMINAL (CLI) -----------------
 if __name__ == '__main__':

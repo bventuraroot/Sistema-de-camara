@@ -2870,6 +2870,13 @@ function initNetworkScannerModal() {
     const scanFoundCount = document.getElementById('scanFoundCount');
     const scannedDevicesList = document.getElementById('scannedDevicesList');
 
+    // Diagnóstico Directo por IP (Ubox / Batería)
+    const diagIpInput = document.getElementById('diagIpInput');
+    const btnDiagnoseIp = document.getElementById('btnDiagnoseIp');
+    const btnDiagnoseIpIcon = document.getElementById('btnDiagnoseIpIcon');
+    const btnDiagnoseIpText = document.getElementById('btnDiagnoseIpText');
+    const diagnoseResultBox = document.getElementById('diagnoseResultBox');
+
     // Panel 2: Fabricantes
     const brandPills = document.querySelectorAll('.brand-pill');
     const brandGuideTitle = document.getElementById('brandGuideTitle');
@@ -2912,6 +2919,15 @@ function initNetworkScannerModal() {
             defaultPort: 554,
             defaultUser: 'admin',
             defaultPass: '',
+            defaultPath: '/live/ch0'
+        },
+        ubox: {
+            title: '🔋 Guía de Configuración: Ubox (Cámaras Solares / Batería PIR)',
+            desc: 'Cámaras que utilizan la app móvil Ubox (chipsets Ingenic T20/T31 / módulo Wi-Fi AI-Link).',
+            tips: "⚠️ <strong>Por qué Ubox se duerme:</strong> Para ahorrar batería, la cámara apaga la antena Wi-Fi y solo despierta cuando su sensor PIR detecta calor o abres la app en el celular.<br><br>👉 <strong>Para conectarla al sistema:</strong><br>1. Conéctala permanentemente con un cable USB de 5V (corriente continua).<br>2. En la app Ubox móvil: Ve a <em>Ajustes del dispositivo &gt; Modo de Energía</em> y selecciona <strong>'Modo Continuo / Siempre Encendida'</strong>.<br>3. Activa en la app la opción <strong>'Monitoreo LAN / Cliente PC'</strong> (si tu modelo la incluye) y define una contraseña.<br>4. Si el modelo es estrictamente 'P2P Cloud Only', no expone puerto RTSP local.",
+            defaultPort: 554,
+            defaultUser: 'admin',
+            defaultPass: 'admin',
             defaultPath: '/live/ch0'
         },
         sehmua: {
@@ -3219,6 +3235,144 @@ function initNetworkScannerModal() {
     }
 
     if (startScanBtn) startScanBtn.addEventListener('click', runNetworkScan);
+
+    // Diagnóstico Forense de IP Directa (Ubox / Batería)
+    async function runIpDiagnosis() {
+        const targetIp = diagIpInput ? diagIpInput.value.trim() : '';
+        if (!targetIp || !/^(\d{1,3}\.){3}\d{1,3}$/.test(targetIp)) {
+            alert('Por favor ingresa una dirección IPv4 válida (ej: 192.168.1.28)');
+            return;
+        }
+
+        if (btnDiagnoseIp) btnDiagnoseIp.disabled = true;
+        if (btnDiagnoseIpIcon) btnDiagnoseIpIcon.textContent = '⏳';
+        if (btnDiagnoseIpText) btnDiagnoseIpText.textContent = 'Analizando IP...';
+        if (diagnoseResultBox) {
+            diagnoseResultBox.style.display = 'block';
+            diagnoseResultBox.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 0.5rem; color: #38bdf8;">
+                    <span class="radar-spinning" style="display: inline-block;">⚙️</span>
+                    <span>Ejecutando pruebas de Ping, consulta de tabla ARP (MAC), escaneo de 10 puertos y verificación RTSP en <strong>${targetIp}</strong>...</span>
+                </div>
+            `;
+        }
+
+        try {
+            const res = await fetch('/api/scanner/diagnose_ip', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip: targetIp })
+            });
+            const data = await res.json();
+            renderIpDiagnosticResult(data);
+        } catch (e) {
+            if (diagnoseResultBox) {
+                diagnoseResultBox.innerHTML = `
+                    <div style="color: #ef4444; font-weight: 500;">❌ Error al conectar con el motor de diagnóstico: ${e.message || e}</div>
+                `;
+            }
+        } finally {
+            if (btnDiagnoseIp) btnDiagnoseIp.disabled = false;
+            if (btnDiagnoseIpIcon) btnDiagnoseIpIcon.textContent = '🩺';
+            if (btnDiagnoseIpText) btnDiagnoseIpText.textContent = 'Diagnosticar Esta IP';
+        }
+    }
+
+    function renderIpDiagnosticResult(data) {
+        if (!diagnoseResultBox) return;
+
+        let statusBadge = '';
+        if (data.status === 'online') {
+            statusBadge = '<span style="background: rgba(34, 197, 94, 0.2); color: #4ade80; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">🟢 EN LÍNEA Y TRANSMITIENDO</span>';
+        } else if (data.status === 'sleep_or_closed') {
+            statusBadge = '<span style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">💤 EN SUSPENSIÓN PROFUNDA / SIN PUERTOS</span>';
+        } else if (data.status === 'rtsp_open_unauthenticated') {
+            statusBadge = '<span style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">🔑 RTSP ABIERTO (REQUIERE CLAVE)</span>';
+        } else {
+            statusBadge = '<span style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">🔴 INALCANZABLE / APAGADO</span>';
+        }
+
+        const openPortsList = (data.open_ports && data.open_ports.length > 0)
+            ? data.open_ports.map(p => `<code style="background: rgba(255,255,255,0.1); padding: 0.1rem 0.35rem; border-radius: 3px; color: #38bdf8;">${p}</code>`).join(' ')
+            : '<span style="color: #94a3b8; font-style: italic;">Ninguno abierto</span>';
+
+        const recHtml = (data.recommendations && data.recommendations.length > 0)
+            ? `<div style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(0,0,0,0.3); border-radius: 4px; border-left: 3px solid ${data.is_ubox ? '#fbbf24' : '#38bdf8'};">
+                 <strong style="color: #cbd5e1; display: block; margin-bottom: 0.25rem;">Pasos recomendados:</strong>
+                 <ul style="margin: 0; padding-left: 1.2rem; color: #94a3b8; line-height: 1.45;">
+                   ${data.recommendations.map(r => `<li>${r}</li>`).join('')}
+                 </ul>
+               </div>`
+            : '';
+
+        let actionBtn = '';
+        if (data.working_url) {
+            actionBtn = `
+                <div style="margin-top: 0.6rem;">
+                    <button type="button" class="btn btn-xs btn-primary btn-use-diag-url" data-url="${data.working_url}" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">
+                        ⚡ Cargar en Asistente de Cámaras
+                    </button>
+                </div>
+            `;
+        } else if (data.is_ubox || data.status === 'sleep_or_closed') {
+            actionBtn = `
+                <div style="margin-top: 0.6rem; display: flex; gap: 0.4rem; align-items: center;">
+                    <button type="button" class="btn btn-xs btn-outline btn-go-ubox-guide" style="font-size: 0.72rem; padding: 0.3rem 0.6rem; border-color: #fbbf24; color: #fbbf24;">
+                        📖 Ver Guía de Activación Ubox
+                    </button>
+                </div>
+            `;
+        }
+
+        diagnoseResultBox.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 0.45rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 0.4rem;">
+                    <div>
+                        <strong style="font-size: 0.85rem; color: #fff;">IP Analizada: ${data.ip}</strong>
+                        ${data.is_ubox ? '<span style="margin-left: 0.4rem; font-size: 0.7rem; background: rgba(245, 158, 11, 0.25); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); padding: 0.1rem 0.35rem; border-radius: 4px;">🔋 Detectada como Ubox / Solar</span>' : ''}
+                    </div>
+                    <div>${statusBadge}</div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.4rem; margin-top: 0.2rem; font-size: 0.74rem;">
+                    <div><span style="color: #94a3b8;">Ping (ICMP):</span> <strong style="color: ${data.ping_ok ? '#4ade80' : '#f87171'};">${data.ping_ok ? `Responde (${data.latency_ms}ms)` : 'Sin respuesta / Caído'}</strong></div>
+                    <div><span style="color: #94a3b8;">Dirección MAC:</span> <code style="color: #cbd5e1; font-family: var(--font-mono);">${data.mac || 'N/A'}</code></div>
+                    <div style="grid-column: 1 / -1;"><span style="color: #94a3b8;">Fabricante / Hardware:</span> <span style="color: #e2e8f0; font-weight: 500;">${data.vendor || 'Desconocido'}</span></div>
+                    <div style="grid-column: 1 / -1;"><span style="color: #94a3b8;">Puertos Abiertos:</span> ${openPortsList}</div>
+                </div>
+
+                <div style="margin-top: 0.3rem; color: #e2e8f0; line-height: 1.4;">
+                    <strong>Dictamen:</strong> ${data.diagnosis || 'Análisis completado.'}
+                </div>
+
+                ${recHtml}
+                ${actionBtn}
+            </div>
+        `;
+
+        const btnUseUrl = diagnoseResultBox.querySelector('.btn-use-diag-url');
+        if (btnUseUrl) {
+            btnUseUrl.addEventListener('click', () => {
+                const url = btnUseUrl.dataset.url;
+                if (url) {
+                    switchWizardTab('panelWizManual');
+                    if (manualRtspInput) manualRtspInput.value = url;
+                }
+            });
+        }
+
+        const btnGoUbox = diagnoseResultBox.querySelector('.btn-go-ubox-guide');
+        if (btnGoUbox) {
+            btnGoUbox.addEventListener('click', () => {
+                switchWizardTab('panelWizBrands');
+                applyBrandProfile('ubox');
+                if (wizCamIp) wizCamIp.value = data.ip;
+                recalculateGeneratedRtsp();
+            });
+        }
+    }
+
+    if (btnDiagnoseIp) btnDiagnoseIp.addEventListener('click', runIpDiagnosis);
 
     function renderDiscoveredDevices(devices) {
         if (!scannedDevicesList) return;

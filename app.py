@@ -54,7 +54,7 @@ from analyzer.alert_system import AlertSystem
 from analyzer.recorder import Recorder
 from analyzer.ptz_controller import PTZController
 from analyzer.icam_ptz_controller import ICam365PTZController
-from analyzer.network_scanner import scan_network_cameras, test_rtsp_connection, CAMERA_PRESETS
+from analyzer.network_scanner import scan_network_cameras, test_rtsp_connection, CAMERA_PRESETS, diagnose_camera_ip
 from analyzer.system_profiler import SystemProfiler
 
 load_dotenv()
@@ -1148,6 +1148,16 @@ def scanner_test_stream():
     rtsp_url = data.get('rtsp_url', '').strip()
     result = test_rtsp_connection(rtsp_url)
     return jsonify(result)
+
+@app.route('/api/scanner/diagnose_ip', methods=['POST'])
+def scanner_diagnose_ip():
+    """Diagnóstico forense en tiempo real de una IP de cámara (ping, ARP, puertos, estado de batería/Ubox)."""
+    data = request.get_json(force=True, silent=True) or {}
+    ip = data.get('ip', '').strip()
+    if not ip:
+        return jsonify({'error': 'IP no especificada'}), 400
+    res = diagnose_camera_ip(ip)
+    return jsonify(res)
 
 @app.route('/api/scanner/apply', methods=['POST'])
 @app.route('/api/camera/<cid>/update_url', methods=['POST'])
